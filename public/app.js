@@ -319,13 +319,15 @@ function renderRound(round, displayName = round.name, getNextDisplayNumber = () 
         <span class="round-meta">${escapeHtml(roundMeta)}</span>
       </div>
       <div class="round-matches">
-        ${round.matches.map((match) => renderMatch(match, round, getNextDisplayNumber)).join("")}
+        ${round.matches
+          .map((match, matchIndex) => renderMatch(match, round, getNextDisplayNumber, matchIndex))
+          .join("")}
       </div>
     </section>
   `;
 }
 
-function renderMatch(match, round, getNextDisplayNumber = () => "") {
+function renderMatch(match, round, getNextDisplayNumber = () => "", matchIndex = 0) {
   const details = [
     match.note ? `<span>${escapeHtml(match.note)}</span>` : ""
   ]
@@ -335,8 +337,8 @@ function renderMatch(match, round, getNextDisplayNumber = () => "") {
   return `
     <article class="match-card is-${getStatusClass(match.status)}" data-match-id="${escapeHtml(match.id)}">
       <div class="match-top">
-        <span class="match-code">${escapeHtml(match.code)}</span>
-        <span class="status match-status ${getStatusClass(match.status)}">${escapeHtml(getMatchStatusText(match))}</span>
+        <span class="match-code">${escapeHtml(getMatchDisplayTitle(match, round, matchIndex))}</span>
+        <span class="match-status-text">${escapeHtml(statusLabels[match.status] || "Terjadwal")}</span>
       </div>
       ${renderTeam(match.home, match.winner === "home", getNextDisplayNumber())}
       ${renderTeam(match.away, match.winner === "away", getNextDisplayNumber())}
@@ -358,6 +360,36 @@ function renderMatch(match, round, getNextDisplayNumber = () => "") {
       </div>
     </article>
   `;
+}
+
+function getMatchNumber(match) {
+  const [, number] = String(match.code || "").match(/^M(\d+)$/) || [];
+  return number || match.slot || "";
+}
+
+function getMatchDisplayTitle(match, round, matchIndex = 0) {
+  const number = getMatchNumber(match);
+
+  if (round.bracketSide === "grand") return "Grand Final";
+  if (round.bracketSide === "lower") {
+    if (/final/i.test(round.name) || (round.matches.length === 1 && !/^Lower R1$/i.test(round.name))) {
+      return "Lower Final";
+    }
+    return `Lower Match ${matchIndex + 1}`;
+  }
+  if (round.bracketSide === "upper" && round.matches.length === 1) {
+    return `Match ${number} (Upper Final)`;
+  }
+
+  return `Match ${number}`;
+}
+
+function formatParticipantName(name) {
+  return String(name || "-")
+    .replace(/\bM(\d+)\b/g, "Match $1")
+    .replace(/Pemenang Lower R(\d+)-(\d+)/g, "Pemenang Lower Match $2")
+    .replace(/Juara Upper/g, "Pemenang Upper Final")
+    .replace(/Juara Lower/g, "Pemenang Lower Final");
 }
 
 function drawBracketConnectors() {
@@ -405,18 +437,19 @@ function drawBracketConnectors() {
 }
 
 function renderTeam(team, isWinner, displayNumber = "") {
+  const displayName = formatParticipantName(team.name);
   const isPlaceholder =
-    team.name.startsWith("Pemenang ") ||
-    team.name.startsWith("Kalah ") ||
-    team.name.startsWith("Slot ") ||
-    team.name.startsWith("Pairing ") ||
-    team.name.startsWith("Juara Grup ") ||
-    team.name.startsWith("Runner-up Grup ") ||
-    team.name === "BYE";
+    displayName.startsWith("Pemenang ") ||
+    displayName.startsWith("Kalah ") ||
+    displayName.startsWith("Slot ") ||
+    displayName.startsWith("Pairing ") ||
+    displayName.startsWith("Juara Grup ") ||
+    displayName.startsWith("Runner-up Grup ") ||
+    displayName === "BYE";
   return `
     <div class="team-row ${isWinner ? "winner" : ""} ${isPlaceholder ? "placeholder" : ""}">
       <span class="team-seed">${escapeHtml(String(displayNumber))}</span>
-      <span class="team-name">${escapeHtml(team.name || "-")}</span>
+      <span class="team-name">${escapeHtml(displayName)}</span>
       <span class="team-score">${team.score ?? "-"}</span>
     </div>
   `;

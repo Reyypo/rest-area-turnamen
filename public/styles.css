@@ -455,6 +455,10 @@ body.is-admin #loginButton {
   gap: 20px;
 }
 
+.bracket.format-double .round-title {
+  display: none;
+}
+
 .match-card {
   position: relative;
   display: grid;
@@ -489,19 +493,35 @@ body.is-admin #loginButton {
 }
 
 .match-top {
-  display: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 40px;
+  gap: 12px;
+  border-bottom: 1px solid rgba(130, 221, 255, 0.14);
+  padding: 0 14px;
+  background: linear-gradient(180deg, rgba(18, 35, 46, 0.95), rgba(8, 18, 27, 0.95));
 }
 
 .match-code {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 850;
+  min-width: 0;
+  overflow: hidden;
+  color: #f2fbff;
+  font-size: 0.95rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.58);
 }
 
-.match-status {
-  max-width: 190px;
+.match-status,
+.match-status-text {
+  max-width: 150px;
   overflow: hidden;
+  color: #79ddff;
+  font-size: 0.8rem;
+  font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

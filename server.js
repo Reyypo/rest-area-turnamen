@@ -26,7 +26,7 @@ const BRACKET_THEMES = new Set([
   "card-dark"
 ]);
 const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group-playoff"]);
-const BRACKET_SIZES = new Set([4, 8, 16, 32]);
+const BRACKET_SIZES = new Set([4, 6, 8, 16, 32]);
 
 const sessions = new Map();
 
@@ -153,9 +153,9 @@ function emptySide(name = "", sourceMatchId = null) {
 function generateSingleElimination(teamInput, options = {}) {
   const teams = cleanTeamNames(teamInput);
   const requestedSlotCount = sanitizeSlotCount(options.slotCount, 8);
-  const slotCount = teams.length
-    ? Math.max(requestedSlotCount, nextPowerOfTwo(Math.max(teams.length, 2)))
-    : requestedSlotCount;
+  const slotCount = nextPowerOfTwo(
+    teams.length ? Math.max(requestedSlotCount, teams.length, 2) : Math.max(requestedSlotCount, 2)
+  );
   const roundCount = Math.log2(slotCount);
   const slots = [...teams];
 
@@ -594,7 +594,12 @@ function syncTournamentTeams(tournament) {
 function createTournament(payload) {
   const cleanedTeams = cleanTeamNames(payload.teams);
   const teamNames = payload.shuffleTeams === true ? shuffleTeamNames(cleanedTeams) : cleanedTeams;
-  const slotCount = sanitizeSlotCount(payload.slotCount, nextPowerOfTwo(Math.max(teamNames.length, 8)));
+  const requestedSlotCount = sanitizeSlotCount(
+    payload.slotCount,
+    nextPowerOfTwo(Math.max(teamNames.length, 8))
+  );
+  const slotCount =
+    teamNames.length > requestedSlotCount ? nextPowerOfTwo(teamNames.length) : requestedSlotCount;
   const tournament = {
     id: createId("tournament"),
     name: String(payload.name || "Turnamen Baru").trim(),
