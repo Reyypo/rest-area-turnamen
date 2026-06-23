@@ -307,6 +307,14 @@ function generateDoubleElimination(teamInput, options = {}) {
     return generateSixSlotDoubleElimination(teamInput, options);
   }
 
+  const effectiveSlotCount = nextPowerOfTwo(
+    teams.length ? Math.max(requestedSlotCount, teams.length, 2) : Math.max(requestedSlotCount, 2)
+  );
+
+  if (effectiveSlotCount === 16) {
+    return generateSixteenSlotDoubleElimination(teamInput, options);
+  }
+
   const upperRounds = generateSingleElimination(teamInput, options);
   const firstUpper = upperRounds[0]?.matches || [];
 
@@ -640,6 +648,208 @@ function generateEightSlotDoubleElimination(upperRounds) {
   });
 
   return [...upperRounds, lowerRound1, lowerRound2, lowerRound3, lowerFinalRound, grandFinal];
+}
+
+function generateSixteenSlotDoubleElimination(teamInput, options = {}) {
+  const slots = createSlots(teamInput, Math.max(16, sanitizeSlotCount(options.slotCount, 16)));
+
+  const upperRound1 = {
+    id: createId("round"),
+    name: "Upper Round 1",
+    bracketSide: "upper",
+    matches: Array.from({ length: 8 }, (_, index) =>
+      createFlatMatch(`M${index + 1}`, index + 1, slots[index * 2], slots[index * 2 + 1])
+    )
+  };
+
+  const upperRound2 = {
+    id: createId("round"),
+    name: "Upper Round 2",
+    bracketSide: "upper",
+    matches: Array.from({ length: 4 }, (_, index) =>
+      createFlatMatch(
+        `M${index + 9}`,
+        index + 1,
+        `Pemenang ${upperRound1.matches[index * 2].code}`,
+        `Pemenang ${upperRound1.matches[index * 2 + 1].code}`
+      )
+    )
+  };
+
+  const upperRound3 = {
+    id: createId("round"),
+    name: "Upper Round 3",
+    bracketSide: "upper",
+    matches: [
+      createFlatMatch("M13", 1, "Pemenang M9", "Pemenang M10"),
+      createFlatMatch("M14", 2, "Pemenang M11", "Pemenang M12")
+    ]
+  };
+
+  const upperFinalRound = {
+    id: createId("round"),
+    name: "Upper Final",
+    bracketSide: "upper",
+    matches: [createFlatMatch("M15", 1, "Pemenang M13", "Pemenang M14")]
+  };
+
+  const lowerRound1 = {
+    id: createId("round"),
+    name: "Lower R1",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M16", 1, "Kalah M1", "Kalah M2"),
+      createFlatMatch("M17", 2, "Kalah M3", "Kalah M4"),
+      createFlatMatch("M18", 3, "Kalah M5", "Kalah M6"),
+      createFlatMatch("M19", 4, "Kalah M7", "Kalah M8")
+    ]
+  };
+
+  const lowerRound2 = {
+    id: createId("round"),
+    name: "Lower R2",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M20", 1, "Pemenang M16", "Kalah M9"),
+      createFlatMatch("M21", 2, "Pemenang M17", "Kalah M10"),
+      createFlatMatch("M22", 3, "Pemenang M18", "Kalah M11"),
+      createFlatMatch("M23", 4, "Pemenang M19", "Kalah M12")
+    ]
+  };
+
+  const lowerRound3 = {
+    id: createId("round"),
+    name: "Lower R3",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M24", 1, "Pemenang M20", "Pemenang M21"),
+      createFlatMatch("M25", 2, "Pemenang M22", "Pemenang M23")
+    ]
+  };
+
+  const lowerRound4 = {
+    id: createId("round"),
+    name: "Lower R4",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M26", 1, "Pemenang M24", "Kalah M13"),
+      createFlatMatch("M27", 2, "Pemenang M25", "Kalah M14")
+    ]
+  };
+
+  const lowerRound5 = {
+    id: createId("round"),
+    name: "Lower R5",
+    bracketSide: "lower",
+    matches: [createFlatMatch("M28", 1, "Pemenang M26", "Pemenang M27")]
+  };
+
+  const lowerFinalRound = {
+    id: createId("round"),
+    name: "Lower Final",
+    bracketSide: "lower",
+    matches: [createFlatMatch("M29", 1, "Pemenang M28", "Kalah M15")]
+  };
+
+  const grandFinal = {
+    id: createId("round"),
+    name: "Grand Final",
+    bracketSide: "grand",
+    matches: [createFlatMatch("M30", 1, "Pemenang M15", "Pemenang M29")]
+  };
+
+  const matchByCode = new Map(
+    [
+      upperRound1,
+      upperRound2,
+      upperRound3,
+      upperFinalRound,
+      lowerRound1,
+      lowerRound2,
+      lowerRound3,
+      lowerRound4,
+      lowerRound5,
+      lowerFinalRound,
+      grandFinal
+    ].flatMap((round) => round.matches.map((match) => [match.code, match]))
+  );
+
+  const feedWinner = (fromCode, toCode, side) => {
+    const from = matchByCode.get(fromCode);
+    const to = matchByCode.get(toCode);
+    from.feedsTo = { matchId: to.id, side };
+    to[side].sourceMatchId = from.id;
+  };
+
+  const feedLoser = (fromCode, toCode, side) => {
+    const from = matchByCode.get(fromCode);
+    const to = matchByCode.get(toCode);
+    from.losesTo = { matchId: to.id, side };
+  };
+
+  [
+    ["M1", "M9", "home"],
+    ["M2", "M9", "away"],
+    ["M3", "M10", "home"],
+    ["M4", "M10", "away"],
+    ["M5", "M11", "home"],
+    ["M6", "M11", "away"],
+    ["M7", "M12", "home"],
+    ["M8", "M12", "away"],
+    ["M9", "M13", "home"],
+    ["M10", "M13", "away"],
+    ["M11", "M14", "home"],
+    ["M12", "M14", "away"],
+    ["M13", "M15", "home"],
+    ["M14", "M15", "away"],
+    ["M15", "M30", "home"],
+    ["M16", "M20", "home"],
+    ["M17", "M21", "home"],
+    ["M18", "M22", "home"],
+    ["M19", "M23", "home"],
+    ["M20", "M24", "home"],
+    ["M21", "M24", "away"],
+    ["M22", "M25", "home"],
+    ["M23", "M25", "away"],
+    ["M24", "M26", "home"],
+    ["M25", "M27", "home"],
+    ["M26", "M28", "home"],
+    ["M27", "M28", "away"],
+    ["M28", "M29", "home"],
+    ["M29", "M30", "away"]
+  ].forEach(([fromCode, toCode, side]) => feedWinner(fromCode, toCode, side));
+
+  [
+    ["M1", "M16", "home"],
+    ["M2", "M16", "away"],
+    ["M3", "M17", "home"],
+    ["M4", "M17", "away"],
+    ["M5", "M18", "home"],
+    ["M6", "M18", "away"],
+    ["M7", "M19", "home"],
+    ["M8", "M19", "away"],
+    ["M9", "M20", "away"],
+    ["M10", "M21", "away"],
+    ["M11", "M22", "away"],
+    ["M12", "M23", "away"],
+    ["M13", "M26", "away"],
+    ["M14", "M27", "away"],
+    ["M15", "M29", "away"]
+  ].forEach(([fromCode, toCode, side]) => feedLoser(fromCode, toCode, side));
+
+  return [
+    upperRound1,
+    upperRound2,
+    upperRound3,
+    upperFinalRound,
+    lowerRound1,
+    lowerRound2,
+    lowerRound3,
+    lowerRound4,
+    lowerRound5,
+    lowerFinalRound,
+    grandFinal
+  ];
 }
 
 function createFlatMatch(code, slot, homeName, awayName) {
