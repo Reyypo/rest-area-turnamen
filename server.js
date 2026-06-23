@@ -30,8 +30,8 @@ const BRACKET_THEMES = new Set([
   "card-light",
   "card-dark"
 ]);
-const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group", "group-playoff"]);
-const BRACKET_SIZES = new Set([4, 6, 8, 16, 32]);
+const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group"]);
+const BRACKET_SIZES = new Set([4, 6, 8, 10, 12, 16, 20, 24, 32]);
 
 const sessions = new Map();
 
@@ -300,11 +300,23 @@ function generateSingleElimination(teamInput, options = {}) {
 }
 
 function generateDoubleElimination(teamInput, options = {}) {
+  const teams = cleanTeamNames(teamInput);
+  const requestedSlotCount = sanitizeSlotCount(options.slotCount, 8);
+
+  if (requestedSlotCount === 6 || teams.length === 6) {
+    return generateSixSlotDoubleElimination(teamInput, options);
+  }
+
   const upperRounds = generateSingleElimination(teamInput, options);
+  const firstUpper = upperRounds[0]?.matches || [];
+
+  if (firstUpper.length === 4) {
+    return generateEightSlotDoubleElimination(upperRounds);
+  }
+
   let matchNumber =
     upperRounds.reduce((total, round) => total + round.matches.length, 0) + 1;
   const lowerRounds = [];
-  const firstUpper = upperRounds[0]?.matches || [];
 
   for (let upperRoundIndex = 0; upperRoundIndex < Math.max(1, upperRounds.length - 1); upperRoundIndex += 1) {
     const sourceRound = upperRounds[upperRoundIndex]?.matches || [];
@@ -348,7 +360,7 @@ function generateDoubleElimination(teamInput, options = {}) {
           `M${matchNumber}`,
           1,
           `Pemenang ${lowerRounds[0].matches[0]?.code || "Lower Match 1"}`,
-          `Kalah ${upperFinal.code} (Upper Final)`
+          `Kalah ${upperFinal.code}`
         )
       ]
     };
@@ -382,7 +394,7 @@ function generateDoubleElimination(teamInput, options = {}) {
       createFlatMatch(
         `M${matchNumber}`,
         1,
-        upperFinal ? `Pemenang ${upperFinal.code} (Upper Final)` : "Juara Upper",
+        upperFinal ? `Pemenang ${upperFinal.code}` : "Juara Upper",
         lowerFinal ? `Pemenang ${lowerFinal.code}` : "Juara Lower"
       )
     ]
@@ -421,6 +433,213 @@ function generateDoubleElimination(teamInput, options = {}) {
   });
 
   return [...upperRounds, ...lowerRounds, grandFinal];
+}
+
+function generateSixSlotDoubleElimination(teamInput, options = {}) {
+  const slots = createSlots(teamInput, sanitizeSlotCount(options.slotCount, 6));
+  const [seed1, seed2, seed3, seed4, seed5, seed6] = slots;
+
+  const upperRound1 = {
+    id: createId("round"),
+    name: "Upper Babak 1",
+    bracketSide: "upper",
+    matches: [
+      createFlatMatch("M1", 1, seed3, seed6),
+      createFlatMatch("M2", 2, seed4, seed5)
+    ]
+  };
+
+  const [upperMatch1, upperMatch2] = upperRound1.matches;
+  const upperRound2 = {
+    id: createId("round"),
+    name: "Upper Babak 2",
+    bracketSide: "upper",
+    matches: [
+      createFlatMatch("M3", 1, seed1, `Pemenang ${upperMatch1.code}`),
+      createFlatMatch("M4", 2, seed2, `Pemenang ${upperMatch2.code}`)
+    ]
+  };
+
+  const [upperMatch3, upperMatch4] = upperRound2.matches;
+  upperMatch3.away.sourceMatchId = upperMatch1.id;
+  upperMatch4.away.sourceMatchId = upperMatch2.id;
+
+  const upperFinalRound = {
+    id: createId("round"),
+    name: "Upper Final",
+    bracketSide: "upper",
+    matches: [
+      createFlatMatch("M5", 1, `Pemenang ${upperMatch3.code}`, `Pemenang ${upperMatch4.code}`)
+    ]
+  };
+
+  const upperFinal = upperFinalRound.matches[0];
+  upperFinal.home.sourceMatchId = upperMatch3.id;
+  upperFinal.away.sourceMatchId = upperMatch4.id;
+
+  const lowerRound1 = {
+    id: createId("round"),
+    name: "Lower R1",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M6", 1, `Kalah ${upperMatch1.code}`, `Kalah ${upperMatch2.code}`)
+    ]
+  };
+
+  const lowerMatch1 = lowerRound1.matches[0];
+  const lowerRound2 = {
+    id: createId("round"),
+    name: "Lower R2",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M7", 1, `Pemenang ${lowerMatch1.code}`, `Kalah ${upperMatch3.code}`)
+    ]
+  };
+
+  const lowerMatch2 = lowerRound2.matches[0];
+  lowerMatch2.home.sourceMatchId = lowerMatch1.id;
+
+  const lowerFinalRound = {
+    id: createId("round"),
+    name: "Lower Final",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch("M8", 1, `Pemenang ${lowerMatch2.code}`, `Kalah ${upperMatch4.code}`)
+    ]
+  };
+
+  const lowerFinal = lowerFinalRound.matches[0];
+  lowerFinal.home.sourceMatchId = lowerMatch2.id;
+
+  const grandFinal = {
+    id: createId("round"),
+    name: "Grand Final",
+    bracketSide: "grand",
+    matches: [
+      createFlatMatch("M9", 1, `Pemenang ${upperFinal.code}`, `Pemenang ${lowerFinal.code}`)
+    ]
+  };
+
+  const grandFinalMatch = grandFinal.matches[0];
+  grandFinalMatch.home.sourceMatchId = upperFinal.id;
+  grandFinalMatch.away.sourceMatchId = lowerFinal.id;
+
+  upperMatch1.feedsTo = { matchId: upperMatch3.id, side: "away" };
+  upperMatch2.feedsTo = { matchId: upperMatch4.id, side: "away" };
+  upperMatch3.feedsTo = { matchId: upperFinal.id, side: "home" };
+  upperMatch4.feedsTo = { matchId: upperFinal.id, side: "away" };
+  upperFinal.feedsTo = { matchId: grandFinalMatch.id, side: "home" };
+  lowerMatch1.feedsTo = { matchId: lowerMatch2.id, side: "home" };
+  lowerMatch2.feedsTo = { matchId: lowerFinal.id, side: "home" };
+  lowerFinal.feedsTo = { matchId: grandFinalMatch.id, side: "away" };
+
+  upperMatch1.losesTo = { matchId: lowerMatch1.id, side: "home" };
+  upperMatch2.losesTo = { matchId: lowerMatch1.id, side: "away" };
+  upperMatch3.losesTo = { matchId: lowerMatch2.id, side: "away" };
+  upperMatch4.losesTo = { matchId: lowerFinal.id, side: "away" };
+
+  return [
+    upperRound1,
+    upperRound2,
+    upperFinalRound,
+    lowerRound1,
+    lowerRound2,
+    lowerFinalRound,
+    grandFinal
+  ];
+}
+
+function generateEightSlotDoubleElimination(upperRounds) {
+  let matchNumber =
+    upperRounds.reduce((total, round) => total + round.matches.length, 0) + 1;
+  const firstUpper = upperRounds[0]?.matches || [];
+  const secondUpper = upperRounds[1]?.matches || [];
+  const upperFinal = upperRounds.at(-1)?.matches[0];
+
+  const lowerRound1 = {
+    id: createId("round"),
+    name: "Lower R1",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch(`M${matchNumber}`, 1, `Kalah ${firstUpper[0]?.code || "M1"}`, `Kalah ${firstUpper[1]?.code || "M2"}`),
+      createFlatMatch(`M${matchNumber + 1}`, 2, `Kalah ${firstUpper[2]?.code || "M3"}`, `Kalah ${firstUpper[3]?.code || "M4"}`)
+    ]
+  };
+  matchNumber += 2;
+
+  const lowerRound2 = {
+    id: createId("round"),
+    name: "Lower R2",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        `Pemenang ${lowerRound1.matches[0].code}`,
+        `Pemenang ${lowerRound1.matches[1].code}`
+      )
+    ]
+  };
+  matchNumber += 1;
+
+  const lowerRound3 = {
+    id: createId("round"),
+    name: "Lower R3",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch(`M${matchNumber}`, 1, `Kalah ${secondUpper[0]?.code || "M5"}`, `Kalah ${secondUpper[1]?.code || "M6"}`)
+    ]
+  };
+  matchNumber += 1;
+
+  const lowerFinalRound = {
+    id: createId("round"),
+    name: "Lower Final",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        `Pemenang ${lowerRound2.matches[0].code}`,
+        `Pemenang ${lowerRound3.matches[0].code}`
+      )
+    ]
+  };
+  matchNumber += 1;
+
+  const grandFinal = {
+    id: createId("round"),
+    name: "Grand Final",
+    bracketSide: "grand",
+    matches: [
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        upperFinal ? `Pemenang ${upperFinal.code}` : "Juara Upper",
+        `Pemenang ${lowerFinalRound.matches[0].code}`
+      )
+    ]
+  };
+
+  lowerRound1.matches[0].feedsTo = { matchId: lowerRound2.matches[0].id, side: "home" };
+  lowerRound1.matches[1].feedsTo = { matchId: lowerRound2.matches[0].id, side: "away" };
+  lowerRound2.matches[0].feedsTo = { matchId: lowerFinalRound.matches[0].id, side: "home" };
+  lowerRound3.matches[0].feedsTo = { matchId: lowerFinalRound.matches[0].id, side: "away" };
+  lowerFinalRound.matches[0].feedsTo = { matchId: grandFinal.matches[0].id, side: "away" };
+
+  if (upperFinal) {
+    upperFinal.feedsTo = {
+      matchId: grandFinal.matches[0].id,
+      side: "home"
+    };
+  }
+
+  upperRounds.forEach((round) => {
+    round.bracketSide = "upper";
+    round.name = `Upper ${round.name}`;
+  });
+
+  return [...upperRounds, lowerRound1, lowerRound2, lowerRound3, lowerFinalRound, grandFinal];
 }
 
 function createFlatMatch(code, slot, homeName, awayName) {
@@ -520,15 +739,15 @@ function getGroupRoundPairings(groupSlots) {
 }
 
 function getGroupCount(slotCount) {
-  if (slotCount <= 4) return 1;
-  if (slotCount <= 8) return 2;
-  return 4;
+  return Math.max(1, Math.ceil(slotCount / 4));
 }
 
 function splitIntoGroups(slots, groupCount) {
-  return Array.from({ length: groupCount }, (_, groupIndex) =>
-    slots.filter((_, slotIndex) => slotIndex % groupCount === groupIndex)
-  );
+  const groups = Array.from({ length: groupCount }, () => []);
+  slots.forEach((slot, index) => {
+    groups[index % groupCount].push(slot);
+  });
+  return groups;
 }
 
 function generateGroupOnly(teamInput, options = {}) {
@@ -643,10 +862,6 @@ function generateBracket(teamInput, options = {}) {
     return generateGroupOnly(teamInput, options);
   }
 
-  if (format === "group-playoff") {
-    return generateGroupPlayoff(teamInput, options);
-  }
-
   return generateSingleElimination(teamInput, options);
 }
 
@@ -700,13 +915,36 @@ function recalculateAdvancement(tournament) {
 
   tournament.rounds.forEach((round) => {
     round.matches.forEach((match) => {
-      if (!match.winner || !match.feedsTo) return;
+      if (!match.losesTo) return;
+
+      const nextMatch = matchMap.get(match.losesTo.matchId);
+      if (!nextMatch) return;
+
+      nextMatch[match.losesTo.side].name = `Kalah ${match.code}`;
+      nextMatch[match.losesTo.side].score = null;
+    });
+  });
+
+  tournament.rounds.forEach((round) => {
+    round.matches.forEach((match) => {
+      if (!match.winner) return;
 
       const winnerSide = match.winner === "away" ? match.away : match.home;
-      const nextMatch = matchMap.get(match.feedsTo.matchId);
-      if (!nextMatch || !winnerSide.name || winnerSide.name === "BYE") return;
+      const loserSide = match.winner === "away" ? match.home : match.away;
 
-      nextMatch[match.feedsTo.side].name = winnerSide.name;
+      if (match.feedsTo) {
+        const nextMatch = matchMap.get(match.feedsTo.matchId);
+        if (nextMatch && winnerSide.name && winnerSide.name !== "BYE") {
+          nextMatch[match.feedsTo.side].name = winnerSide.name;
+        }
+      }
+
+      if (match.losesTo) {
+        const nextMatch = matchMap.get(match.losesTo.matchId);
+        if (nextMatch && loserSide.name && loserSide.name !== "BYE") {
+          nextMatch[match.losesTo.side].name = loserSide.name;
+        }
+      }
     });
   });
 
@@ -745,12 +983,17 @@ function syncTournamentTeams(tournament) {
 function createTournament(payload) {
   const cleanedTeams = cleanTeamNames(payload.teams);
   const teamNames = payload.shuffleTeams === true ? shuffleTeamNames(cleanedTeams) : cleanedTeams;
+  const bracketFormat = sanitizeBracketFormat(payload.bracketFormat);
   const requestedSlotCount = sanitizeSlotCount(
     payload.slotCount,
     nextPowerOfTwo(Math.max(teamNames.length, 8))
   );
   const slotCount =
-    teamNames.length > requestedSlotCount ? nextPowerOfTwo(teamNames.length) : requestedSlotCount;
+    teamNames.length > requestedSlotCount
+      ? bracketFormat === "group"
+        ? teamNames.length
+        : nextPowerOfTwo(teamNames.length)
+      : requestedSlotCount;
   const tournament = {
     id: createId("tournament"),
     name: String(payload.name || "Turnamen Baru").trim(),
@@ -760,11 +1003,11 @@ function createTournament(payload) {
     status: ["draft", "live", "finished"].includes(payload.status) ? payload.status : "draft",
     slotCount,
     bracketTheme: sanitizeBracketTheme(payload.bracketTheme),
-    bracketFormat: sanitizeBracketFormat(payload.bracketFormat),
+    bracketFormat,
     teams: teamNames,
     rounds: generateBracket(teamNames, {
       slotCount,
-      bracketFormat: sanitizeBracketFormat(payload.bracketFormat)
+      bracketFormat
     }),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -1028,9 +1271,15 @@ async function handleApi(req, res, pathname) {
       tournament.bracketFormat = sanitizeBracketFormat(body.bracketFormat || tournament.bracketFormat);
 
       if (body.regenerate === true) {
-        tournament.slotCount = sanitizeSlotCount(body.slotCount, tournament.slotCount || 8);
         const cleanedTeams = cleanTeamNames(body.teams);
         const teams = body.shuffleTeams === true ? shuffleTeamNames(cleanedTeams) : cleanedTeams;
+        const requestedSlotCount = sanitizeSlotCount(body.slotCount, tournament.slotCount || 8);
+        tournament.slotCount =
+          teams.length > requestedSlotCount
+            ? tournament.bracketFormat === "group"
+              ? teams.length
+              : nextPowerOfTwo(teams.length)
+            : requestedSlotCount;
         tournament.teams = teams;
         tournament.rounds = generateBracket(teams, {
           slotCount: tournament.slotCount,
