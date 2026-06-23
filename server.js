@@ -1,0 +1,983 @@
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const PORT = Number(process.env.PORT || 3000);
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  crypto.createHash("sha256").update(`local:${ADMIN_USERNAME}:${ADMIN_PASSWORD}`).digest("hex");
+
+const ROOT_DIR = __dirname;
+const PUBLIC_DIR = path.join(ROOT_DIR, "public");
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(ROOT_DIR, "data");
+const DATA_FILE = path.join(DATA_DIR, "brackets.json");
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const BRACKET_THEMES = new Set([
+  "classic-light",
+  "classic-dark",
+  "modern-light",
+  "modern-dark",
+  "card-light",
+  "card-dark"
+]);
+const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group-playoff"]);
+const BRACKET_SIZES = new Set([4, 8, 16, 32]);
+
+const sessions = new Map();
+
+const contentTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon"
+};
+
+function ensureDataFile() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(DATA_FILE)) {
+    const demo = createDemoTournament();
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ tournaments: [demo] }, null, 2));
+  }
+}
+
+function readData() {
+  ensureDataFile();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    if (!Array.isArray(parsed.tournaments)) {
+      return { tournaments: [] };
+    }
+    return parsed;
+  } catch (error) {
+    console.error("Failed to read data file:", error);
+    return { tournaments: [] };
+  }
+}
+
+function writeData(data) {
+  ensureDataFile();
+  const tmp = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, DATA_FILE);
+}
+
+function createId(prefix) {
+  return `${prefix}-${crypto.randomBytes(5).toString("hex")}`;
+}
+
+function cleanTeamNames(teams) {
+  const source = Array.isArray(teams) ? teams : String(teams || "").split(/\r?\n/);
+  const unique = [];
+  const seen = new Set();
+
+  for (const rawName of source) {
+    const name = String(rawName || "").trim();
+    const key = name.toLowerCase();
+    if (name && !seen.has(key)) {
+      unique.push(name);
+      seen.add(key);
+    }
+  }
+
+  return unique;
+}
+
+function shuffleTeamNames(teams) {
+  const shuffled = [...teams];
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(index + 1);
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+
+  return shuffled;
+}
+
+function sanitizeBracketTheme(value) {
+  return BRACKET_THEMES.has(value) ? value : "modern-light";
+}
+
+function sanitizeBracketFormat(value) {
+  return BRACKET_FORMATS.has(value) ? value : "single";
+}
+
+function sanitizeSlotCount(value, fallback = 8) {
+  const number = Number(value);
+  const safeFallback = BRACKET_SIZES.has(Number(fallback)) ? Number(fallback) : 8;
+  return BRACKET_SIZES.has(number) ? number : safeFallback;
+}
+
+function createSlots(teamInput, slotCount) {
+  const teams = cleanTeamNames(teamInput);
+  const slots = [...teams];
+
+  while (slots.length < slotCount) {
+    slots.push(`Slot ${slots.length + 1}`);
+  }
+
+  return slots.slice(0, slotCount);
+}
+
+function nextPowerOfTwo(value) {
+  let size = 2;
+  while (size < value) size *= 2;
+  return size;
+}
+
+function getRoundName(index, total) {
+  if (index === total - 1) return "Final";
+  if (index === total - 2) return "Semifinal";
+  if (index === total - 3) return "Perempat Final";
+  return `Babak ${index + 1}`;
+}
+
+function emptySide(name = "", sourceMatchId = null) {
+  return {
+    name,
+    sourceMatchId,
+    score: null
+  };
+}
+
+function generateSingleElimination(teamInput, options = {}) {
+  const teams = cleanTeamNames(teamInput);
+  const requestedSlotCount = sanitizeSlotCount(options.slotCount, 8);
+  const slotCount = teams.length
+    ? Math.max(requestedSlotCount, nextPowerOfTwo(Math.max(teams.length, 2)))
+    : requestedSlotCount;
+  const roundCount = Math.log2(slotCount);
+  const slots = [...teams];
+
+  while (slots.length < slotCount) {
+    slots.push(`Slot ${slots.length + 1}`);
+  }
+
+  const rounds = [];
+  let matchNumber = 1;
+
+  for (let roundIndex = 0; roundIndex < roundCount; roundIndex += 1) {
+    const matchCount = slotCount / 2 ** (roundIndex + 1);
+    const round = {
+      id: createId("round"),
+      name: getRoundName(roundIndex, roundCount),
+      matches: []
+    };
+
+    for (let matchIndex = 0; matchIndex < matchCount; matchIndex += 1) {
+      const homeSource =
+        roundIndex === 0 ? null : rounds[roundIndex - 1].matches[matchIndex * 2].id;
+      const awaySource =
+        roundIndex === 0 ? null : rounds[roundIndex - 1].matches[matchIndex * 2 + 1].id;
+      const homeSourceCode =
+        roundIndex === 0 ? null : rounds[roundIndex - 1].matches[matchIndex * 2].code;
+      const awaySourceCode =
+        roundIndex === 0 ? null : rounds[roundIndex - 1].matches[matchIndex * 2 + 1].code;
+      const homeName =
+        roundIndex === 0 ? slots[matchIndex * 2] : `Pemenang ${homeSourceCode}`;
+      const awayName =
+        roundIndex === 0 ? slots[matchIndex * 2 + 1] : `Pemenang ${awaySourceCode}`;
+      const match = {
+        id: createId("match"),
+        code: `M${matchNumber}`,
+        slot: matchIndex + 1,
+        home: emptySide(homeName, homeSource),
+        away: emptySide(awayName, awaySource),
+        status: "scheduled",
+        winner: null,
+        scheduledAt: "",
+        note: ""
+      };
+
+      round.matches.push(match);
+      matchNumber += 1;
+    }
+
+    rounds.push(round);
+  }
+
+  for (let roundIndex = 0; roundIndex < rounds.length - 1; roundIndex += 1) {
+    rounds[roundIndex].matches.forEach((match, matchIndex) => {
+      const nextMatch = rounds[roundIndex + 1].matches[Math.floor(matchIndex / 2)];
+      match.feedsTo = {
+        matchId: nextMatch.id,
+        side: matchIndex % 2 === 0 ? "home" : "away"
+      };
+    });
+  }
+
+  rounds.at(-1).matches[0].feedsTo = null;
+
+  applyByeWinners(rounds[0].matches);
+  return rounds;
+}
+
+function generateDoubleElimination(teamInput, options = {}) {
+  const upperRounds = generateSingleElimination(teamInput, options);
+  let matchNumber =
+    upperRounds.reduce((total, round) => total + round.matches.length, 0) + 1;
+  const lowerRounds = [];
+  const firstUpper = upperRounds[0]?.matches || [];
+
+  for (let upperRoundIndex = 0; upperRoundIndex < Math.max(1, upperRounds.length - 1); upperRoundIndex += 1) {
+    const sourceRound = upperRounds[upperRoundIndex]?.matches || [];
+    const sourceCount = Math.max(1, Math.floor(sourceRound.length / 2));
+    const round = {
+      id: createId("round"),
+      name: `Lower R${upperRoundIndex + 1}`,
+      bracketSide: "lower",
+      matches: []
+    };
+
+    for (let matchIndex = 0; matchIndex < sourceCount; matchIndex += 1) {
+      const firstSource = sourceRound[matchIndex * 2] || firstUpper[matchIndex * 2];
+      const secondSource = sourceRound[matchIndex * 2 + 1] || firstUpper[matchIndex * 2 + 1];
+      const homeName =
+        upperRoundIndex === 0 && firstSource
+          ? `Kalah ${firstSource.code}`
+          : `Pemenang Lower R${upperRoundIndex}-${matchIndex + 1}`;
+      const awayName =
+        upperRoundIndex === 0 && secondSource
+          ? `Kalah ${secondSource.code}`
+          : `Kalah ${sourceRound[matchIndex]?.code || `Upper R${upperRoundIndex + 1}`}`;
+
+      round.matches.push(createFlatMatch(`M${matchNumber}`, matchIndex + 1, homeName, awayName));
+      matchNumber += 1;
+    }
+
+    lowerRounds.push(round);
+  }
+
+  if (lowerRounds.length > 1) {
+    const finalRound = {
+      id: createId("round"),
+      name: "Lower Final",
+      bracketSide: "lower",
+      matches: [
+        createFlatMatch(
+          `M${matchNumber}`,
+          1,
+          `Pemenang ${lowerRounds.at(-2).matches[0]?.code || "Lower"}`,
+          `Pemenang ${lowerRounds.at(-1).matches[0]?.code || "Lower"}`
+        )
+      ]
+    };
+    lowerRounds.push(finalRound);
+    matchNumber += 1;
+  }
+
+  const upperFinal = upperRounds.at(-1)?.matches[0];
+  const lowerFinal = lowerRounds.at(-1)?.matches[0];
+  const grandFinal = {
+    id: createId("round"),
+    name: "Grand Final",
+    bracketSide: "grand",
+    matches: [
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        upperFinal ? `Pemenang ${upperFinal.code}` : "Juara Upper",
+        lowerFinal ? `Pemenang ${lowerFinal.code}` : "Juara Lower"
+      )
+    ]
+  };
+
+  lowerRounds.forEach((round, roundIndex) => {
+    const nextRound = lowerRounds[roundIndex + 1];
+    if (!nextRound) return;
+
+    round.matches.forEach((match, matchIndex) => {
+      const nextMatch = nextRound.matches[Math.floor(matchIndex / 2)] || nextRound.matches[0];
+      match.feedsTo = {
+        matchId: nextMatch.id,
+        side: matchIndex % 2 === 0 ? "home" : "away"
+      };
+    });
+  });
+
+  if (upperFinal) {
+    upperFinal.feedsTo = {
+      matchId: grandFinal.matches[0].id,
+      side: "home"
+    };
+  }
+
+  if (lowerFinal) {
+    lowerFinal.feedsTo = {
+      matchId: grandFinal.matches[0].id,
+      side: "away"
+    };
+  }
+
+  upperRounds.forEach((round) => {
+    round.bracketSide = "upper";
+    round.name = `Upper ${round.name}`;
+  });
+
+  return [...upperRounds, ...lowerRounds, grandFinal];
+}
+
+function createFlatMatch(code, slot, homeName, awayName) {
+  return {
+    id: createId("match"),
+    code,
+    slot,
+    home: emptySide(homeName),
+    away: emptySide(awayName),
+    status: "scheduled",
+    winner: null,
+    scheduledAt: "",
+    note: "",
+    feedsTo: null
+  };
+}
+
+function generateRoundRobin(teamInput, options = {}) {
+  const slotCount = sanitizeSlotCount(options.slotCount, 8);
+  let slots = createSlots(teamInput, slotCount);
+  const rounds = [];
+  let matchNumber = 1;
+
+  for (let roundIndex = 0; roundIndex < slotCount - 1; roundIndex += 1) {
+    const round = {
+      id: createId("round"),
+      name: `Matchday ${roundIndex + 1}`,
+      matches: []
+    };
+
+    for (let pairIndex = 0; pairIndex < slotCount / 2; pairIndex += 1) {
+      const left = slots[pairIndex];
+      const right = slots[slotCount - 1 - pairIndex];
+      const homeName = roundIndex % 2 === 0 ? left : right;
+      const awayName = roundIndex % 2 === 0 ? right : left;
+      round.matches.push(createFlatMatch(`M${matchNumber}`, pairIndex + 1, homeName, awayName));
+      matchNumber += 1;
+    }
+
+    rounds.push(round);
+    slots = [slots[0], slots[slotCount - 1], ...slots.slice(1, slotCount - 1)];
+  }
+
+  return rounds;
+}
+
+function generateSwissManual(teamInput, options = {}) {
+  const slotCount = sanitizeSlotCount(options.slotCount, 8);
+  const slots = createSlots(teamInput, slotCount);
+  const roundCount = Math.ceil(Math.log2(slotCount));
+  const rounds = [];
+  let matchNumber = 1;
+
+  for (let roundIndex = 0; roundIndex < roundCount; roundIndex += 1) {
+    const round = {
+      id: createId("round"),
+      name: `Swiss R${roundIndex + 1}`,
+      matches: []
+    };
+
+    for (let pairIndex = 0; pairIndex < slotCount / 2; pairIndex += 1) {
+      const homeName = roundIndex === 0 ? slots[pairIndex * 2] : `Pairing R${roundIndex + 1}-${pairIndex * 2 + 1}`;
+      const awayName =
+        roundIndex === 0 ? slots[pairIndex * 2 + 1] : `Pairing R${roundIndex + 1}-${pairIndex * 2 + 2}`;
+      round.matches.push(createFlatMatch(`M${matchNumber}`, pairIndex + 1, homeName, awayName));
+      matchNumber += 1;
+    }
+
+    rounds.push(round);
+  }
+
+  return rounds;
+}
+
+function getGroupName(index) {
+  return `Grup ${String.fromCharCode(65 + index)}`;
+}
+
+function getGroupRoundPairings(groupSlots) {
+  let slots = [...groupSlots];
+  const rounds = [];
+
+  for (let roundIndex = 0; roundIndex < groupSlots.length - 1; roundIndex += 1) {
+    const matches = [];
+    for (let pairIndex = 0; pairIndex < groupSlots.length / 2; pairIndex += 1) {
+      matches.push([slots[pairIndex], slots[groupSlots.length - 1 - pairIndex]]);
+    }
+    rounds.push(matches);
+    slots = [slots[0], slots[groupSlots.length - 1], ...slots.slice(1, groupSlots.length - 1)];
+  }
+
+  return rounds;
+}
+
+function generateGroupPlayoff(teamInput, options = {}) {
+  const slotCount = sanitizeSlotCount(options.slotCount, 8);
+  const slots = createSlots(teamInput, slotCount);
+  const groupCount = slotCount <= 8 ? 2 : 4;
+  const groupSize = slotCount / groupCount;
+  const groups = Array.from({ length: groupCount }, (_, groupIndex) =>
+    slots.slice(groupIndex * groupSize, (groupIndex + 1) * groupSize)
+  );
+  const groupPairings = groups.map(getGroupRoundPairings);
+  const rounds = [];
+  let matchNumber = 1;
+
+  for (let roundIndex = 0; roundIndex < groupSize - 1; roundIndex += 1) {
+    const round = {
+      id: createId("round"),
+      name: `Fase Grup R${roundIndex + 1}`,
+      matches: []
+    };
+
+    groupPairings.forEach((pairings, groupIndex) => {
+      pairings[roundIndex].forEach(([homeName, awayName], pairIndex) => {
+        const match = createFlatMatch(`M${matchNumber}`, round.matches.length + 1, homeName, awayName);
+        match.note = getGroupName(groupIndex);
+        round.matches.push(match);
+        matchNumber += 1;
+      });
+    });
+
+    rounds.push(round);
+  }
+
+  if (groupCount === 2) {
+    rounds.push({
+      id: createId("round"),
+      name: "Final",
+      matches: [createFlatMatch(`M${matchNumber}`, 1, "Juara Grup A", "Juara Grup B")]
+    });
+  } else {
+    const semifinal = {
+      id: createId("round"),
+      name: "Semifinal",
+      matches: [
+        createFlatMatch(`M${matchNumber}`, 1, "Juara Grup A", "Runner-up Grup B"),
+        createFlatMatch(`M${matchNumber + 1}`, 2, "Juara Grup C", "Runner-up Grup D")
+      ]
+    };
+    matchNumber += 2;
+    const final = {
+      id: createId("round"),
+      name: "Final",
+      matches: [createFlatMatch(`M${matchNumber}`, 1, `Pemenang ${semifinal.matches[0].code}`, `Pemenang ${semifinal.matches[1].code}`)]
+    };
+    semifinal.matches[0].feedsTo = { matchId: final.matches[0].id, side: "home" };
+    semifinal.matches[1].feedsTo = { matchId: final.matches[0].id, side: "away" };
+    rounds.push(semifinal, final);
+  }
+
+  return rounds;
+}
+
+function generateBracket(teamInput, options = {}) {
+  const format = sanitizeBracketFormat(options.bracketFormat);
+
+  if (format === "round-robin") {
+    return generateRoundRobin(teamInput, options);
+  }
+
+  if (format === "double") {
+    return generateDoubleElimination(teamInput, options);
+  }
+
+  if (format === "swiss") {
+    return generateSwissManual(teamInput, options);
+  }
+
+  if (format === "group-playoff") {
+    return generateGroupPlayoff(teamInput, options);
+  }
+
+  return generateSingleElimination(teamInput, options);
+}
+
+function applyByeWinners(matches) {
+  for (const match of matches) {
+    const homeBye = match.home.name === "BYE";
+    const awayBye = match.away.name === "BYE";
+
+    if (homeBye && !awayBye) {
+      match.status = "finished";
+      match.winner = "away";
+    }
+
+    if (awayBye && !homeBye) {
+      match.status = "finished";
+      match.winner = "home";
+    }
+  }
+}
+
+function getAllMatches(tournament) {
+  return tournament.rounds.flatMap((round) =>
+    round.matches.map((match) => ({
+      round,
+      match
+    }))
+  );
+}
+
+function findMatch(tournament, matchId) {
+  return getAllMatches(tournament).find(({ match }) => match.id === matchId);
+}
+
+function recalculateAdvancement(tournament) {
+  const matchMap = new Map(getAllMatches(tournament).map(({ match }) => [match.id, match]));
+
+  tournament.rounds.forEach((round, roundIndex) => {
+    if (roundIndex === 0) return;
+
+    round.matches.forEach((match) => {
+      ["home", "away"].forEach((side) => {
+        const sourceId = match[side].sourceMatchId;
+        if (!sourceId) return;
+
+        const sourceMatch = sourceId ? matchMap.get(sourceId) : null;
+        match[side].name = sourceMatch ? `Pemenang ${sourceMatch.code}` : "";
+        match[side].score = null;
+      });
+    });
+  });
+
+  tournament.rounds.forEach((round) => {
+    round.matches.forEach((match) => {
+      if (!match.winner || !match.feedsTo) return;
+
+      const winnerSide = match.winner === "away" ? match.away : match.home;
+      const nextMatch = matchMap.get(match.feedsTo.matchId);
+      if (!nextMatch || !winnerSide.name || winnerSide.name === "BYE") return;
+
+      nextMatch[match.feedsTo.side].name = winnerSide.name;
+    });
+  });
+
+  tournament.updatedAt = new Date().toISOString();
+}
+
+function syncTournamentTeams(tournament) {
+  const firstRound = tournament.rounds?.[0];
+  if (!firstRound) return;
+
+  const teams = [];
+  for (const match of firstRound.matches) {
+    [match.home.name, match.away.name].forEach((name) => {
+      const cleanName = String(name || "").trim();
+      if (
+        cleanName &&
+        cleanName !== "BYE" &&
+        !cleanName.startsWith("Slot ") &&
+        !cleanName.startsWith("Pemenang ") &&
+        !cleanName.startsWith("Kalah ") &&
+        !cleanName.startsWith("Pairing ") &&
+        !cleanName.startsWith("Juara Grup ") &&
+        !cleanName.startsWith("Runner-up Grup ") &&
+        !teams.some((team) => team.toLowerCase() === cleanName.toLowerCase())
+      ) {
+        teams.push(cleanName);
+      }
+    });
+  }
+
+  tournament.teams = teams;
+}
+
+function createTournament(payload) {
+  const cleanedTeams = cleanTeamNames(payload.teams);
+  const teamNames = payload.shuffleTeams === true ? shuffleTeamNames(cleanedTeams) : cleanedTeams;
+  const slotCount = sanitizeSlotCount(payload.slotCount, nextPowerOfTwo(Math.max(teamNames.length, 8)));
+  const tournament = {
+    id: createId("tournament"),
+    name: String(payload.name || "Turnamen Baru").trim(),
+    game: String(payload.game || "Open Tournament").trim(),
+    venue: String(payload.venue || "").trim(),
+    startDate: String(payload.startDate || "").trim(),
+    status: ["draft", "live", "finished"].includes(payload.status) ? payload.status : "draft",
+    slotCount,
+    bracketTheme: sanitizeBracketTheme(payload.bracketTheme),
+    bracketFormat: sanitizeBracketFormat(payload.bracketFormat),
+    teams: teamNames,
+    rounds: generateBracket(teamNames, {
+      slotCount,
+      bracketFormat: sanitizeBracketFormat(payload.bracketFormat)
+    }),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  recalculateAdvancement(tournament);
+  return tournament;
+}
+
+function createDemoTournament() {
+  const demo = createTournament({
+    name: "Liga Komunitas 2026",
+    game: "Mobile Legends",
+    venue: "Arena Nusantara",
+    startDate: "2026-06-21",
+    status: "live",
+    teams: [
+      "Garuda Prime",
+      "Volt Esports",
+      "Orion Squad",
+      "Northwind",
+      "Rift Hunters",
+      "Satria Muda",
+      "Apex Nine",
+      "Byte Force"
+    ]
+  });
+
+  const firstRound = demo.rounds[0].matches;
+  firstRound[0].home.score = 2;
+  firstRound[0].away.score = 1;
+  firstRound[0].winner = "home";
+  firstRound[0].status = "finished";
+  firstRound[1].home.score = 0;
+  firstRound[1].away.score = 2;
+  firstRound[1].winner = "away";
+  firstRound[1].status = "finished";
+  firstRound[2].home.score = 1;
+  firstRound[2].away.score = 1;
+  firstRound[2].status = "live";
+  recalculateAdvancement(demo);
+
+  return demo;
+}
+
+function sendJson(res, statusCode, body, headers = {}) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...headers
+  });
+  res.end(JSON.stringify(body));
+}
+
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) {
+        req.destroy();
+        reject(new Error("Request body is too large"));
+      }
+    });
+    req.on("end", () => {
+      if (!body) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(body));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || "";
+  return Object.fromEntries(
+    header
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [key, ...value] = part.split("=");
+        return [decodeURIComponent(key), decodeURIComponent(value.join("="))];
+      })
+  );
+}
+
+function sign(value) {
+  const signature = crypto.createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
+  return `${value}.${signature}`;
+}
+
+function verifySigned(value) {
+  if (!value || !value.includes(".")) return null;
+  const index = value.lastIndexOf(".");
+  const raw = value.slice(0, index);
+  const signature = value.slice(index + 1);
+  const expected = sign(raw).slice(index + 1);
+  const providedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (providedBuffer.length !== expectedBuffer.length) return null;
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer) ? raw : null;
+}
+
+function getSession(req) {
+  const cookies = parseCookies(req);
+  const sessionId = verifySigned(cookies.admin_session);
+  if (!sessionId) return null;
+
+  const session = sessions.get(sessionId);
+  if (!session || session.expiresAt < Date.now()) {
+    sessions.delete(sessionId);
+    return null;
+  }
+
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  return session;
+}
+
+function authHeadersForSession(sessionId) {
+  return {
+    "Set-Cookie": `admin_session=${encodeURIComponent(sign(sessionId))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(
+      SESSION_TTL_MS / 1000
+    )}`
+  };
+}
+
+function clearAuthHeaders() {
+  return {
+    "Set-Cookie": "admin_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+  };
+}
+
+function safeString(value, fallback = "") {
+  return String(value ?? fallback).trim();
+}
+
+function sanitizeScore(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(0, Math.floor(number));
+}
+
+function updateMatch(match, payload) {
+  match.home.name = safeString(payload.homeName, match.home.name);
+  match.away.name = safeString(payload.awayName, match.away.name);
+  match.home.score = sanitizeScore(payload.homeScore);
+  match.away.score = sanitizeScore(payload.awayScore);
+  match.status = ["scheduled", "live", "finished"].includes(payload.status)
+    ? payload.status
+    : match.status;
+  match.winner = ["home", "away"].includes(payload.winner) ? payload.winner : null;
+  match.scheduledAt = safeString(payload.scheduledAt, match.scheduledAt);
+  match.note = safeString(payload.note, match.note);
+
+  if (match.status === "finished" && !match.winner) {
+    const home = match.home.score;
+    const away = match.away.score;
+    if (home !== null && away !== null && home !== away) {
+      match.winner = home > away ? "home" : "away";
+    }
+  }
+}
+
+async function handleApi(req, res, pathname) {
+  const session = getSession(req);
+  const isAdmin = Boolean(session);
+
+  if (pathname === "/api/session" && req.method === "GET") {
+    sendJson(res, 200, {
+      authenticated: isAdmin,
+      username: isAdmin ? session.username : null
+    });
+    return;
+  }
+
+  if (pathname === "/api/login" && req.method === "POST") {
+    const body = await parseJsonBody(req);
+    const username = safeString(body.username);
+    const password = String(body.password || "");
+
+    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+      const sessionId = crypto.randomBytes(24).toString("base64url");
+      sessions.set(sessionId, {
+        username,
+        expiresAt: Date.now() + SESSION_TTL_MS
+      });
+      sendJson(res, 200, { authenticated: true, username }, authHeadersForSession(sessionId));
+      return;
+    }
+
+    sendJson(res, 401, { error: "Username atau password salah." });
+    return;
+  }
+
+  if (pathname === "/api/logout" && req.method === "POST") {
+    const cookies = parseCookies(req);
+    const sessionId = verifySigned(cookies.admin_session);
+    if (sessionId) sessions.delete(sessionId);
+    sendJson(res, 200, { ok: true }, clearAuthHeaders());
+    return;
+  }
+
+  if (pathname === "/api/tournaments" && req.method === "GET") {
+    sendJson(res, 200, readData());
+    return;
+  }
+
+  if (pathname === "/api/tournaments" && req.method === "POST") {
+    if (!isAdmin) {
+      sendJson(res, 403, { error: "Akses admin diperlukan." });
+      return;
+    }
+
+    const body = await parseJsonBody(req);
+    const data = readData();
+    const tournament = createTournament(body);
+    data.tournaments.unshift(tournament);
+    writeData(data);
+    sendJson(res, 201, tournament);
+    return;
+  }
+
+  const tournamentMatch = pathname.match(/^\/api\/tournaments\/([^/]+)$/);
+  if (tournamentMatch) {
+    if (!isAdmin && req.method !== "GET") {
+      sendJson(res, 403, { error: "Akses admin diperlukan." });
+      return;
+    }
+
+    const data = readData();
+    const tournament = data.tournaments.find((item) => item.id === tournamentMatch[1]);
+    if (!tournament) {
+      sendJson(res, 404, { error: "Turnamen tidak ditemukan." });
+      return;
+    }
+
+    if (req.method === "GET") {
+      sendJson(res, 200, tournament);
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const body = await parseJsonBody(req);
+      tournament.name = safeString(body.name, tournament.name);
+      tournament.game = safeString(body.game, tournament.game);
+      tournament.venue = safeString(body.venue, tournament.venue);
+      tournament.startDate = safeString(body.startDate, tournament.startDate);
+      tournament.status = ["draft", "live", "finished"].includes(body.status)
+        ? body.status
+        : tournament.status;
+      tournament.bracketTheme = sanitizeBracketTheme(body.bracketTheme || tournament.bracketTheme);
+      tournament.bracketFormat = sanitizeBracketFormat(body.bracketFormat || tournament.bracketFormat);
+
+      if (body.regenerate === true) {
+        tournament.slotCount = sanitizeSlotCount(body.slotCount, tournament.slotCount || 8);
+        const cleanedTeams = cleanTeamNames(body.teams);
+        const teams = body.shuffleTeams === true ? shuffleTeamNames(cleanedTeams) : cleanedTeams;
+        tournament.teams = teams;
+        tournament.rounds = generateBracket(teams, {
+          slotCount: tournament.slotCount,
+          bracketFormat: tournament.bracketFormat
+        });
+      }
+
+      syncTournamentTeams(tournament);
+      recalculateAdvancement(tournament);
+      writeData(data);
+      sendJson(res, 200, tournament);
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const index = data.tournaments.findIndex((item) => item.id === tournament.id);
+      data.tournaments.splice(index, 1);
+      writeData(data);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+  }
+
+  const matchRoute = pathname.match(/^\/api\/tournaments\/([^/]+)\/matches\/([^/]+)$/);
+  if (matchRoute) {
+    if (!isAdmin) {
+      sendJson(res, 403, { error: "Akses admin diperlukan." });
+      return;
+    }
+
+    const data = readData();
+    const tournament = data.tournaments.find((item) => item.id === matchRoute[1]);
+    if (!tournament) {
+      sendJson(res, 404, { error: "Turnamen tidak ditemukan." });
+      return;
+    }
+
+    const found = findMatch(tournament, matchRoute[2]);
+    if (!found) {
+      sendJson(res, 404, { error: "Match tidak ditemukan." });
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const body = await parseJsonBody(req);
+      updateMatch(found.match, body);
+      recalculateAdvancement(tournament);
+      syncTournamentTeams(tournament);
+      writeData(data);
+      sendJson(res, 200, tournament);
+      return;
+    }
+  }
+
+  sendJson(res, 404, { error: "Endpoint tidak ditemukan." });
+}
+
+function serveStatic(req, res, pathname) {
+  const targetPath = pathname === "/" ? "/index.html" : pathname;
+  const normalized = path.normalize(decodeURIComponent(targetPath)).replace(/^(\.\.[/\\])+/, "");
+  const filePath = path.join(PUBLIC_DIR, normalized);
+
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, {
+      "Content-Type": contentTypes[ext] || "application/octet-stream",
+      "Cache-Control": [".html", ".css", ".js"].includes(ext) ? "no-store" : "public, max-age=600"
+    });
+    res.end(content);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const pathname = url.pathname;
+
+    if (pathname.startsWith("/api/")) {
+      await handleApi(req, res, pathname);
+      return;
+    }
+
+    serveStatic(req, res, pathname);
+  } catch (error) {
+    console.error(error);
+    sendJson(res, 500, { error: "Terjadi kesalahan server." });
+  }
+});
+
+ensureDataFile();
+server.listen(PORT, () => {
+  console.log(`Bracket Tournament running at http://localhost:${PORT}`);
+  console.log(`Admin username: ${ADMIN_USERNAME}`);
+});

@@ -1,0 +1,14 @@
+{
+  "name": "bracket-tournament",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Website bracket turnamen dengan login admin dan tampilan publik read-only.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rest Area Turnamen</title>
+    <link rel="stylesheet" href="/styles.css?v=20260617-7" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Rest Area Turnamen">
+          <span class="brand-mark">
+            <img src="/assets/rest-area-logo.gif" alt="" />
+          </span>
+          <span>
+            <strong>Rest Area Turnamen</strong>
+            <small id="adminState">Mode publik</small>
+          </span>
+        </a>
+        <nav class="top-actions" aria-label="Aksi utama">
+          <button class="button ghost admin-only" id="addTournamentButton" type="button">Tambah</button>
+          <button class="button primary" id="loginButton" type="button">Admin</button>
+          <button class="button danger admin-only" id="logoutButton" type="button">Keluar</button>
+        </nav>
+      </header>
+
+      <main class="layout">
+        <aside class="tournament-panel" aria-label="Daftar turnamen">
+          <div class="panel-heading">
+            <span>Turnamen</span>
+            <span id="tournamentCount">0</span>
+          </div>
+          <div class="tournament-list" id="tournamentList"></div>
+        </aside>
+
+        <section class="bracket-panel" aria-live="polite">
+          <div class="tournament-head" id="tournamentHead"></div>
+          <div class="bracket-scroll" id="bracketScroll"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="modal" id="loginDialog">
+      <form class="modal-content" id="loginForm" method="dialog">
+        <div class="modal-head">
+          <div>
+            <h2>Login Admin</h2>
+            <p>Masuk untuk mengelola bracket.</p>
+          </div>
+          <button class="icon-button" data-close="loginDialog" type="button" aria-label="Tutup">x</button>
+        </div>
+        <label>
+          Username
+          <input autocomplete="username" id="usernameInput" name="username" required />
+        </label>
+        <label>
+          Password
+          <input autocomplete="current-password" id="passwordInput" name="password" required type="password" />
+        </label>
+        <p class="form-error" id="loginError"></p>
+        <div class="modal-actions">
+          <button class="button ghost" data-close="loginDialog" type="button">Batal</button>
+          <button class="button primary" type="submit">Masuk</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal wide" id="tournamentDialog">
+      <form class="modal-content" id="tournamentForm" method="dialog">
+        <div class="modal-head">
+          <div>
+            <h2 id="tournamentDialogTitle">Tambah Turnamen</h2>
+            <p id="tournamentDialogHint">Susun peserta dan bracket awal.</p>
+          </div>
+          <button class="icon-button" data-close="tournamentDialog" type="button" aria-label="Tutup">x</button>
+        </div>
+        <input id="tournamentIdInput" type="hidden" />
+        <div class="form-grid">
+          <label>
+            Nama Turnamen
+            <input id="tournamentNameInput" required />
+          </label>
+          <label>
+            Cabang / Game
+            <input id="gameInput" />
+          </label>
+          <label>
+            Tanggal Mulai
+            <input id="startDateInput" type="date" />
+          </label>
+          <label>
+            Status
+            <select id="statusInput">
+              <option value="draft">Draft</option>
+              <option value="live">Berlangsung</option>
+              <option value="finished">Selesai</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Lokasi
+          <input id="venueInput" />
+        </label>
+        <label>
+          Format Turnamen
+          <select id="bracketFormatInput">
+            <option value="single">Single Elimination / Knockout</option>
+            <option value="double">Double Elimination / Upper + Lower</option>
+            <option value="round-robin">Round Robin / Liga</option>
+            <option value="swiss">Swiss Manual Pairing</option>
+            <option value="group-playoff">Grup + Playoff</option>
+          </select>
+        </label>
+        <div class="form-grid">
+          <label>
+            Slot Bracket
+            <select id="bracketSizeInput">
+              <option value="4">4 slot</option>
+              <option value="8">8 slot</option>
+              <option value="16">16 slot</option>
+              <option value="32">32 slot</option>
+            </select>
+          </label>
+          <label>
+            Tampilan Default
+            <select id="bracketThemeInput">
+              <option value="classic-light">Classic (Light)</option>
+              <option value="classic-dark">Classic (Dark)</option>
+              <option value="modern-light">Modern (Light)</option>
+              <option value="modern-dark">Modern (Dark)</option>
+              <option value="card-light">Card (Light)</option>
+              <option value="card-dark">Card (Dark)</option>
+            </select>
+          </label>
+        </div>
+        <div class="theme-grid" aria-label="Pilihan tampilan bracket">
+          <button class="theme-option" data-theme-option="classic-dark" type="button">
+            <span class="theme-preview preview-classic dark"><i></i><i></i><i></i></span>
+            <strong>Classic (Dark)</strong>
+          </button>
+          <button class="theme-option" data-theme-option="classic-light" type="button">
+            <span class="theme-preview preview-classic light"><i></i><i></i><i></i></span>
+            <strong>Classic (Light)</strong>
+          </button>
+          <button class="theme-option" data-theme-option="modern-dark" type="button">
+            <span class="theme-preview preview-modern dark"><i></i><i></i></span>
+            <strong>Modern (Dark)</strong>
+          </button>
+          <button class="theme-option" data-theme-option="modern-light" type="button">
+            <span class="theme-preview preview-modern light"><i></i><i></i></span>
+            <strong>Modern (Light)</strong>
+          </button>
+          <button class="theme-option" data-theme-option="card-dark" type="button">
+            <span class="theme-preview preview-card dark"><i></i><i></i></span>
+            <strong>Card (Dark)</strong>
+          </button>
+          <button class="theme-option" data-theme-option="card-light" type="button">
+            <span class="theme-preview preview-card light"><i></i><i></i></span>
+            <strong>Card (Light)</strong>
+          </button>
+        </div>
+        <label class="check-row" id="regenerateRow">
+          <input id="regenerateInput" type="checkbox" />
+          <span>Buat ulang bracket kosong dari pilihan slot</span>
+        </label>
+        <p class="form-error" id="tournamentError"></p>
+        <div class="modal-actions">
+          <button class="button ghost" data-close="tournamentDialog" type="button">Batal</button>
+          <button class="button primary" type="submit">Simpan</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal wide" id="matchDialog">
+      <form class="modal-content" id="matchForm" method="dialog">
+        <div class="modal-head">
+          <div>
+            <h2 id="matchDialogTitle">Edit Match</h2>
+            <p id="matchDialogHint"></p>
+          </div>
+          <button class="icon-button" data-close="matchDialog" type="button" aria-label="Tutup">x</button>
+        </div>
+        <input id="matchIdInput" type="hidden" />
+        <div class="score-grid">
+          <label>
+            Tim Kiri
+            <input id="homeNameInput" required />
+          </label>
+          <label>
+            Skor
+            <input id="homeScoreInput" min="0" type="number" />
+          </label>
+          <label>
+            Tim Kanan
+            <input id="awayNameInput" required />
+          </label>
+          <label>
+            Skor
+            <input id="awayScoreInput" min="0" type="number" />
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Jadwal
+            <input id="scheduledAtInput" type="datetime-local" />
+          </label>
+          <label>
+            Status
+            <select id="matchStatusInput">
+              <option value="scheduled">Terjadwal</option>
+              <option value="live">Berlangsung</option>
+              <option value="finished">Selesai</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Pemenang
+          <select id="winnerInput">
+            <option value="">Belum ditentukan</option>
+            <option value="home">Tim kiri</option>
+            <option value="away">Tim kanan</option>
+          </select>
+        </label>
+        <label>
+          Catatan
+          <textarea id="noteInput" rows="3"></textarea>
+        </label>
+        <p class="form-error" id="matchError"></p>
+        <div class="modal-actions split">
+          <button class="button ghost" id="clearMatchButton" type="button">Kosongkan Hasil</button>
+          <span></span>
+          <button class="button ghost" data-close="matchDialog" type="button">Batal</button>
+          <button class="button primary" type="submit">Simpan</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js?v=20260617-7" defer></script>
+  </body>
+</html>
