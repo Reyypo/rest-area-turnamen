@@ -34,6 +34,7 @@ const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "gr
 const BRACKET_SIZES = new Set([4, 6, 8, 10, 12, 16, 20, 24, 32]);
 
 const sessions = new Map();
+let supabaseDisabledForRuntime = false;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -116,12 +117,26 @@ function readFileData() {
   }
 }
 
+function shouldDisableSupabase(error) {
+  return ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"].includes(error?.cause?.code || error?.code);
+}
+
+function handleSupabaseError(error) {
+  if (shouldDisableSupabase(error)) {
+    supabaseDisabledForRuntime = true;
+    console.error(`Supabase unavailable (${error.cause?.code || error.code}). Using local data file for this runtime.`);
+    return;
+  }
+
+  console.error(error);
+}
+
 async function readData() {
-  if (USE_SUPABASE) {
+  if (USE_SUPABASE && !supabaseDisabledForRuntime) {
     try {
       return await readSupabaseData();
     } catch (error) {
-      console.error(error);
+      handleSupabaseError(error);
       return readFileData();
     }
   }
@@ -137,12 +152,12 @@ function writeFileData(data) {
 }
 
 async function writeData(data) {
-  if (USE_SUPABASE) {
+  if (USE_SUPABASE && !supabaseDisabledForRuntime) {
     try {
       await writeSupabaseData(data);
       return;
     } catch (error) {
-      console.error(error);
+      handleSupabaseError(error);
     }
   }
 
@@ -1278,39 +1293,17 @@ function createTournament(payload) {
 }
 
 function createDemoTournament() {
-  const demo = createTournament({
-    name: "Liga Komunitas 2026",
-    game: "Mobile Legends",
-    venue: "Arena Nusantara",
-    startDate: "2026-06-21",
-    status: "live",
-    teams: [
-      "Garuda Prime",
-      "Volt Esports",
-      "Orion Squad",
-      "Northwind",
-      "Rift Hunters",
-      "Satria Muda",
-      "Apex Nine",
-      "Byte Force"
-    ]
+  return createTournament({
+    name: "COMING SOON",
+    game: "Valorant",
+    venue: "Online",
+    startDate: "2026-08-22",
+    status: "draft",
+    teams: [],
+    slotCount: 6,
+    bracketFormat: "double",
+    bracketTheme: "modern-dark"
   });
-
-  const firstRound = demo.rounds[0].matches;
-  firstRound[0].home.score = 2;
-  firstRound[0].away.score = 1;
-  firstRound[0].winner = "home";
-  firstRound[0].status = "finished";
-  firstRound[1].home.score = 0;
-  firstRound[1].away.score = 2;
-  firstRound[1].winner = "away";
-  firstRound[1].status = "finished";
-  firstRound[2].home.score = 1;
-  firstRound[2].away.score = 1;
-  firstRound[2].status = "live";
-  recalculateAdvancement(demo);
-
-  return demo;
 }
 
 function sendJson(res, statusCode, body, headers = {}) {
