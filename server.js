@@ -595,7 +595,27 @@ function generateEightSlotDoubleElimination(upperRounds) {
     name: "Lower R3",
     bracketSide: "lower",
     matches: [
-      createFlatMatch(`M${matchNumber}`, 1, `Kalah ${secondUpper[0]?.code || "M5"}`, `Kalah ${secondUpper[1]?.code || "M6"}`)
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        `Kalah ${secondUpper[0]?.code || "M5"}`,
+        `Pemenang ${lowerRound2.matches[0].code}`
+      )
+    ]
+  };
+  matchNumber += 1;
+
+  const lowerRound4 = {
+    id: createId("round"),
+    name: "Lower R4",
+    bracketSide: "lower",
+    matches: [
+      createFlatMatch(
+        `M${matchNumber}`,
+        1,
+        `Kalah ${secondUpper[1]?.code || "M6"}`,
+        `Pemenang ${lowerRound3.matches[0].code}`
+      )
     ]
   };
   matchNumber += 1;
@@ -608,8 +628,8 @@ function generateEightSlotDoubleElimination(upperRounds) {
       createFlatMatch(
         `M${matchNumber}`,
         1,
-        `Pemenang ${lowerRound2.matches[0].code}`,
-        `Pemenang ${lowerRound3.matches[0].code}`
+        `Pemenang ${lowerRound4.matches[0].code}`,
+        upperFinal ? `Kalah ${upperFinal.code}` : "Kalah Upper Final"
       )
     ]
   };
@@ -631,23 +651,53 @@ function generateEightSlotDoubleElimination(upperRounds) {
 
   lowerRound1.matches[0].feedsTo = { matchId: lowerRound2.matches[0].id, side: "home" };
   lowerRound1.matches[1].feedsTo = { matchId: lowerRound2.matches[0].id, side: "away" };
-  lowerRound2.matches[0].feedsTo = { matchId: lowerFinalRound.matches[0].id, side: "home" };
-  lowerRound3.matches[0].feedsTo = { matchId: lowerFinalRound.matches[0].id, side: "away" };
+  lowerRound2.matches[0].feedsTo = { matchId: lowerRound3.matches[0].id, side: "away" };
+  lowerRound3.matches[0].feedsTo = { matchId: lowerRound4.matches[0].id, side: "away" };
+  lowerRound4.matches[0].feedsTo = { matchId: lowerFinalRound.matches[0].id, side: "home" };
   lowerFinalRound.matches[0].feedsTo = { matchId: grandFinal.matches[0].id, side: "away" };
+
+  lowerRound2.matches[0].home.sourceMatchId = lowerRound1.matches[0].id;
+  lowerRound2.matches[0].away.sourceMatchId = lowerRound1.matches[1].id;
+  lowerRound3.matches[0].away.sourceMatchId = lowerRound2.matches[0].id;
+  lowerRound4.matches[0].away.sourceMatchId = lowerRound3.matches[0].id;
+  lowerFinalRound.matches[0].home.sourceMatchId = lowerRound4.matches[0].id;
+  grandFinal.matches[0].away.sourceMatchId = lowerFinalRound.matches[0].id;
+
+  if (secondUpper[0]) {
+    secondUpper[0].losesTo = { matchId: lowerRound3.matches[0].id, side: "home" };
+  }
+
+  if (secondUpper[1]) {
+    secondUpper[1].losesTo = { matchId: lowerRound4.matches[0].id, side: "home" };
+  }
 
   if (upperFinal) {
     upperFinal.feedsTo = {
       matchId: grandFinal.matches[0].id,
       side: "home"
     };
+    upperFinal.losesTo = {
+      matchId: lowerFinalRound.matches[0].id,
+      side: "away"
+    };
+    grandFinal.matches[0].home.sourceMatchId = upperFinal.id;
   }
+
+  firstUpper.forEach((match, index) => {
+    const target = lowerRound1.matches[Math.floor(index / 2)];
+    if (!target) return;
+    match.losesTo = {
+      matchId: target.id,
+      side: index % 2 === 0 ? "home" : "away"
+    };
+  });
 
   upperRounds.forEach((round) => {
     round.bracketSide = "upper";
     round.name = `Upper ${round.name}`;
   });
 
-  return [...upperRounds, lowerRound1, lowerRound2, lowerRound3, lowerFinalRound, grandFinal];
+  return [...upperRounds, lowerRound1, lowerRound2, lowerRound3, lowerRound4, lowerFinalRound, grandFinal];
 }
 
 function generateSixteenSlotDoubleElimination(teamInput, options = {}) {
