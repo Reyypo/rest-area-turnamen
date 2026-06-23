@@ -16,6 +16,11 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(ROOT_DIR, "data");
 const DATA_FILE = path.join(DATA_DIR, "brackets.json");
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const SUPABASE_TABLE = "app_state";
+const SUPABASE_DATA_KEY = "bracket-data";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const BRACKET_THEMES = new Set([
   "classic-light",
@@ -25,7 +30,7 @@ const BRACKET_THEMES = new Set([
   "card-light",
   "card-dark"
 ]);
-const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group-playoff"]);
+const BRACKET_FORMATS = new Set(["single", "double", "round-robin", "swiss", "group", "group-playoff"]);
 const BRACKET_SIZES = new Set([4, 6, 8, 16, 32]);
 
 const sessions = new Map();
@@ -51,7 +56,53 @@ function ensureDataFile() {
   }
 }
 
-function readData() {
+async function readSupabaseData() {
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?key=eq.${encodeURIComponent(SUPABASE_DATA_KEY)}&select=data`,
+    {
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Supabase read failed: ${response.status} ${await response.text()}`);
+  }
+
+  const rows = await response.json();
+  if (rows[0]?.data && Array.isArray(rows[0].data.tournaments)) {
+    return rows[0].data;
+  }
+
+  const initialData = readFileData();
+  await writeSupabaseData(initialData);
+  return initialData;
+}
+
+async function writeSupabaseData(data) {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates"
+    },
+    body: JSON.stringify({
+      key: SUPABASE_DATA_KEY,
+      data,
+      updated_at: new Date().toISOString()
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase write failed: ${response.status} ${await response.text()}`);
+  }
+}
+
+function readFileData() {
   ensureDataFile();
   try {
     const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
@@ -65,11 +116,37 @@ function readData() {
   }
 }
 
-function writeData(data) {
+async function readData() {
+  if (USE_SUPABASE) {
+    try {
+      return await readSupabaseData();
+    } catch (error) {
+      console.error(error);
+      return readFileData();
+    }
+  }
+
+  return readFileData();
+}
+
+function writeFileData(data) {
   ensureDataFile();
   const tmp = `${DATA_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, DATA_FILE);
+}
+
+async function writeData(data) {
+  if (USE_SUPABASE) {
+    try {
+      await writeSupabaseData(data);
+      return;
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  writeFileData(data);
 }
 
 function createId(prefix) {
@@ -258,7 +335,26 @@ function generateDoubleElimination(teamInput, options = {}) {
     lowerRounds.push(round);
   }
 
-  if (lowerRounds.length > 1) {
+  const upperFinal = upperRounds.at(-1)?.matches[0];
+  const needsFourSlotLowerFinal = upperRounds.length === 2 && lowerRounds.length === 1 && upperFinal;
+
+  if (needsFourSlotLowerFinal) {
+    const finalRound = {
+      id: createId("round"),
+      name: "Lower Final",
+      bracketSide: "lower",
+      matches: [
+        createFlatMatch(
+          `M${matchNumber}`,
+          1,
+          `Pemenang ${lowerRounds[0].matches[0]?.code || "Lower Match 1"}`,
+          `Kalah ${upperFinal.code} (Upper Final)`
+        )
+      ]
+    };
+    lowerRounds.push(finalRound);
+    matchNumber += 1;
+  } else if (lowerRounds.length > 1) {
     const finalRound = {
       id: createId("round"),
       name: "Lower Final",
@@ -276,8 +372,8 @@ function generateDoubleElimination(teamInput, options = {}) {
     matchNumber += 1;
   }
 
-  const upperFinal = upperRounds.at(-1)?.matches[0];
   const lowerFinal = lowerRounds.at(-1)?.matches[0];
+  const lowerFinalRound = lowerRounds.at(-1);
   const grandFinal = {
     id: createId("round"),
     name: "Grand Final",
@@ -286,7 +382,7 @@ function generateDoubleElimination(teamInput, options = {}) {
       createFlatMatch(
         `M${matchNumber}`,
         1,
-        upperFinal ? `Pemenang ${upperFinal.code}` : "Juara Upper",
+        upperFinal ? `Pemenang ${upperFinal.code} (Upper Final)` : "Juara Upper",
         lowerFinal ? `Pemenang ${lowerFinal.code}` : "Juara Lower"
       )
     ]
@@ -404,16 +500,66 @@ function getGroupName(index) {
 }
 
 function getGroupRoundPairings(groupSlots) {
-  let slots = [...groupSlots];
+  let slots = groupSlots.length % 2 === 0 ? [...groupSlots] : [...groupSlots, "BYE"];
   const rounds = [];
 
-  for (let roundIndex = 0; roundIndex < groupSlots.length - 1; roundIndex += 1) {
+  for (let roundIndex = 0; roundIndex < slots.length - 1; roundIndex += 1) {
     const matches = [];
-    for (let pairIndex = 0; pairIndex < groupSlots.length / 2; pairIndex += 1) {
-      matches.push([slots[pairIndex], slots[groupSlots.length - 1 - pairIndex]]);
+    for (let pairIndex = 0; pairIndex < slots.length / 2; pairIndex += 1) {
+      const left = slots[pairIndex];
+      const right = slots[slots.length - 1 - pairIndex];
+      if (left !== "BYE" && right !== "BYE") {
+        matches.push([left, right]);
+      }
     }
     rounds.push(matches);
-    slots = [slots[0], slots[groupSlots.length - 1], ...slots.slice(1, groupSlots.length - 1)];
+    slots = [slots[0], slots[slots.length - 1], ...slots.slice(1, slots.length - 1)];
+  }
+
+  return rounds;
+}
+
+function getGroupCount(slotCount) {
+  if (slotCount <= 4) return 1;
+  if (slotCount <= 8) return 2;
+  return 4;
+}
+
+function splitIntoGroups(slots, groupCount) {
+  return Array.from({ length: groupCount }, (_, groupIndex) =>
+    slots.filter((_, slotIndex) => slotIndex % groupCount === groupIndex)
+  );
+}
+
+function generateGroupOnly(teamInput, options = {}) {
+  const slotCount = sanitizeSlotCount(options.slotCount, 8);
+  const slots = createSlots(teamInput, slotCount);
+  const groupCount = getGroupCount(slotCount);
+  const groups = splitIntoGroups(slots, groupCount);
+  const groupPairings = groups.map(getGroupRoundPairings);
+  const maxRoundCount = Math.max(...groupPairings.map((pairings) => pairings.length), 0);
+  const rounds = [];
+  let matchNumber = 1;
+
+  for (let roundIndex = 0; roundIndex < maxRoundCount; roundIndex += 1) {
+    const round = {
+      id: createId("round"),
+      name: `Jadwal Grup ${roundIndex + 1}`,
+      bracketSide: "group",
+      matches: []
+    };
+
+    groupPairings.forEach((pairings, groupIndex) => {
+      (pairings[roundIndex] || []).forEach(([homeName, awayName]) => {
+        const match = createFlatMatch(`M${matchNumber}`, round.matches.length + 1, homeName, awayName);
+        match.note = getGroupName(groupIndex);
+        match.groupName = getGroupName(groupIndex);
+        round.matches.push(match);
+        matchNumber += 1;
+      });
+    });
+
+    rounds.push(round);
   }
 
   return rounds;
@@ -423,10 +569,8 @@ function generateGroupPlayoff(teamInput, options = {}) {
   const slotCount = sanitizeSlotCount(options.slotCount, 8);
   const slots = createSlots(teamInput, slotCount);
   const groupCount = slotCount <= 8 ? 2 : 4;
-  const groupSize = slotCount / groupCount;
-  const groups = Array.from({ length: groupCount }, (_, groupIndex) =>
-    slots.slice(groupIndex * groupSize, (groupIndex + 1) * groupSize)
-  );
+  const groups = splitIntoGroups(slots, groupCount);
+  const groupSize = Math.max(...groups.map((group) => group.length));
   const groupPairings = groups.map(getGroupRoundPairings);
   const rounds = [];
   let matchNumber = 1;
@@ -439,9 +583,10 @@ function generateGroupPlayoff(teamInput, options = {}) {
     };
 
     groupPairings.forEach((pairings, groupIndex) => {
-      pairings[roundIndex].forEach(([homeName, awayName], pairIndex) => {
+      (pairings[roundIndex] || []).forEach(([homeName, awayName], pairIndex) => {
         const match = createFlatMatch(`M${matchNumber}`, round.matches.length + 1, homeName, awayName);
         match.note = getGroupName(groupIndex);
+        match.groupName = getGroupName(groupIndex);
         round.matches.push(match);
         matchNumber += 1;
       });
@@ -492,6 +637,10 @@ function generateBracket(teamInput, options = {}) {
 
   if (format === "swiss") {
     return generateSwissManual(teamInput, options);
+  }
+
+  if (format === "group") {
+    return generateGroupOnly(teamInput, options);
   }
 
   if (format === "group-playoff") {
@@ -565,27 +714,29 @@ function recalculateAdvancement(tournament) {
 }
 
 function syncTournamentTeams(tournament) {
-  const firstRound = tournament.rounds?.[0];
-  if (!firstRound) return;
+  const rounds = tournament.rounds || [];
+  if (!rounds.length) return;
 
   const teams = [];
-  for (const match of firstRound.matches) {
-    [match.home.name, match.away.name].forEach((name) => {
-      const cleanName = String(name || "").trim();
-      if (
-        cleanName &&
-        cleanName !== "BYE" &&
-        !cleanName.startsWith("Slot ") &&
-        !cleanName.startsWith("Pemenang ") &&
-        !cleanName.startsWith("Kalah ") &&
-        !cleanName.startsWith("Pairing ") &&
-        !cleanName.startsWith("Juara Grup ") &&
-        !cleanName.startsWith("Runner-up Grup ") &&
-        !teams.some((team) => team.toLowerCase() === cleanName.toLowerCase())
-      ) {
-        teams.push(cleanName);
-      }
-    });
+  for (const round of rounds) {
+    for (const match of round.matches) {
+      [match.home.name, match.away.name].forEach((name) => {
+        const cleanName = String(name || "").trim();
+        if (
+          cleanName &&
+          cleanName !== "BYE" &&
+          !cleanName.startsWith("Slot ") &&
+          !cleanName.startsWith("Pemenang ") &&
+          !cleanName.startsWith("Kalah ") &&
+          !cleanName.startsWith("Pairing ") &&
+          !cleanName.startsWith("Juara Grup ") &&
+          !cleanName.startsWith("Runner-up Grup ") &&
+          !teams.some((team) => team.toLowerCase() === cleanName.toLowerCase())
+        ) {
+          teams.push(cleanName);
+        }
+      });
+    }
   }
 
   tournament.teams = teams;
@@ -826,7 +977,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === "/api/tournaments" && req.method === "GET") {
-    sendJson(res, 200, readData());
+    sendJson(res, 200, await readData());
     return;
   }
 
@@ -837,10 +988,10 @@ async function handleApi(req, res, pathname) {
     }
 
     const body = await parseJsonBody(req);
-    const data = readData();
+    const data = await readData();
     const tournament = createTournament(body);
     data.tournaments.unshift(tournament);
-    writeData(data);
+    await writeData(data);
     sendJson(res, 201, tournament);
     return;
   }
@@ -852,7 +1003,7 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
-    const data = readData();
+    const data = await readData();
     const tournament = data.tournaments.find((item) => item.id === tournamentMatch[1]);
     if (!tournament) {
       sendJson(res, 404, { error: "Turnamen tidak ditemukan." });
@@ -889,7 +1040,7 @@ async function handleApi(req, res, pathname) {
 
       syncTournamentTeams(tournament);
       recalculateAdvancement(tournament);
-      writeData(data);
+      await writeData(data);
       sendJson(res, 200, tournament);
       return;
     }
@@ -897,7 +1048,7 @@ async function handleApi(req, res, pathname) {
     if (req.method === "DELETE") {
       const index = data.tournaments.findIndex((item) => item.id === tournament.id);
       data.tournaments.splice(index, 1);
-      writeData(data);
+      await writeData(data);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -910,7 +1061,7 @@ async function handleApi(req, res, pathname) {
       return;
     }
 
-    const data = readData();
+    const data = await readData();
     const tournament = data.tournaments.find((item) => item.id === matchRoute[1]);
     if (!tournament) {
       sendJson(res, 404, { error: "Turnamen tidak ditemukan." });
@@ -928,7 +1079,7 @@ async function handleApi(req, res, pathname) {
       updateMatch(found.match, body);
       recalculateAdvancement(tournament);
       syncTournamentTeams(tournament);
-      writeData(data);
+      await writeData(data);
       sendJson(res, 200, tournament);
       return;
     }

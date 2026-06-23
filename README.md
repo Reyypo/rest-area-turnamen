@@ -59,3 +59,19 @@ Data turnamen disimpan di persistent disk Render pada path:
 ```
 
 Jangan gunakan password default `admin123` saat website sudah publik.
+
+### Supabase untuk data permanen gratis
+
+Jika memakai Render free tanpa persistent disk, data file lokal bisa reset saat redeploy/restart. Untuk menyimpan data di Supabase:
+
+1. Buat project Supabase.
+2. Buka SQL Editor Supabase.
+3. Jalankan isi file `supabase-schema.sql`.
+4. Tambahkan environment variable di Render:
+
+```text
+SUPABASE_URL=https://project-id.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=service-role-key-rahasia
+```
+
+Jika kedua env tersebut tersedia, aplikasi otomatis memakai Supabase. Jika tidak tersedia, aplikasi fallback ke `data/brackets.json`.

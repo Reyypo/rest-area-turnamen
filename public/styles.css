@@ -455,8 +455,100 @@ body.is-admin #loginButton {
   gap: 20px;
 }
 
-.bracket.format-double .round-title {
+.bracket .round-title {
   display: none;
+}
+
+.group-stage {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(420px, 1fr));
+  gap: 22px;
+  min-width: min(100%, 980px);
+}
+
+.group-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  border: 1px solid rgba(130, 221, 255, 0.18);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(13, 22, 29, 0.52);
+  box-shadow:
+    0 16px 32px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.group-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-bottom: 1px solid rgba(130, 221, 255, 0.14);
+  padding-bottom: 10px;
+}
+
+.group-card-head h2 {
+  margin: 0;
+  color: #f2fbff;
+  font-size: 1rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.group-card-head span {
+  flex: 0 0 auto;
+  color: #79ddff;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.standings-wrap {
+  overflow-x: auto;
+}
+
+.standings-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  color: #edf6fa;
+  font-size: 0.8rem;
+}
+
+.standings-table th,
+.standings-table td {
+  border-bottom: 1px solid rgba(130, 221, 255, 0.12);
+  padding: 9px 8px;
+  text-align: center;
+}
+
+.standings-table th:nth-child(2),
+.standings-table td:nth-child(2) {
+  min-width: 160px;
+  text-align: left;
+}
+
+.standings-table th {
+  color: #9fe8ff;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.standings-table td:last-child {
+  color: #ffb46f;
+  font-weight: 950;
+}
+
+.group-match-list {
+  display: grid;
+  gap: 12px;
+}
+
+.bracket.format-group {
+  display: block;
+  min-width: min(100%, 980px);
+  width: 100%;
 }
 
 .match-card {
@@ -1067,6 +1159,10 @@ textarea:focus {
   .score-grid,
   .theme-grid {
     grid-template-columns: 1fr;
+  }
+
+  .group-stage {
+    grid-template-columns: minmax(320px, 1fr);
   }
 
   .tournament-title h1 {

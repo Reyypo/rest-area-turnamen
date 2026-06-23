@@ -18,6 +18,7 @@ const formatLabels = {
   double: "Double Elimination",
   "round-robin": "Round Robin",
   swiss: "Swiss Manual",
+  group: "Grup",
   "group-playoff": "Grup + Playoff"
 };
 
@@ -131,6 +132,13 @@ function getMatchCount(tournament) {
 }
 
 function getChampion(tournament) {
+  if (getBracketFormat(tournament) === "group") {
+    const leaders = getGroupedMatches(tournament)
+      .flatMap(([, matchEntries]) => computeGroupStandings(matchEntries).slice(0, 1))
+      .map((standing) => standing.teamName);
+    return leaders.length ? leaders.join(", ") : "-";
+  }
+
   const finalMatch = tournament?.rounds?.at(-1)?.matches?.[0];
   if (!finalMatch?.winner) return "-";
   return finalMatch[finalMatch.winner]?.name || "-";
@@ -250,7 +258,7 @@ function renderBracket() {
       <div class="stat"><span>Slot</span><strong>${getTeamsCount(tournament)}</strong></div>
       <div class="stat"><span>Format</span><strong>${escapeHtml(formatLabels[getBracketFormat(tournament)] || "-")}</strong></div>
       <div class="stat"><span>Match</span><strong>${getMatchCount(tournament)}</strong></div>
-      <div class="stat"><span>Juara</span><strong>${escapeHtml(getChampion(tournament))}</strong></div>
+      <div class="stat"><span>${getBracketFormat(tournament) === "group" ? "Peringkat 1" : "Juara"}</span><strong>${escapeHtml(getChampion(tournament))}</strong></div>
     </div>
   `;
 
@@ -258,21 +266,173 @@ function renderBracket() {
     <div class="bracket-stage">
       <svg class="connector-layer" aria-hidden="true"></svg>
       <div class="bracket theme-${escapeHtml(getBracketTheme(tournament))} format-${escapeHtml(getBracketFormat(tournament))}">
-        ${renderBracketRounds(tournament)}
+        ${
+          getBracketFormat(tournament) === "group"
+            ? renderGroupStage(tournament)
+            : renderBracketRounds(tournament)
+        }
       </div>
     </div>
   `;
   window.requestAnimationFrame(drawBracketConnectors);
 }
 
+function getMatchGroupName(match) {
+  return match.groupName || match.note || "Grup A";
+}
+
+function getGroupedMatches(tournament) {
+  const groups = new Map();
+
+  (tournament.rounds || []).forEach((round) => {
+    (round.matches || []).forEach((match) => {
+      const groupName = getMatchGroupName(match);
+      if (!groups.has(groupName)) groups.set(groupName, []);
+      groups.get(groupName).push({ round, match });
+    });
+  });
+
+  return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right, "id-ID"));
+}
+
+function getEmptyStanding(teamName) {
+  return {
+    teamName,
+    played: 0,
+    wins: 0,
+    losses: 0,
+    draws: 0,
+    scored: 0,
+    conceded: 0,
+    points: 0
+  };
+}
+
+function computeGroupStandings(matchEntries) {
+  const standings = new Map();
+
+  matchEntries.forEach(({ match }) => {
+    [match.home.name, match.away.name].forEach((name) => {
+      const teamName = String(name || "").trim();
+      if (!teamName || teamName === "BYE") return;
+      if (!standings.has(teamName)) standings.set(teamName, getEmptyStanding(teamName));
+    });
+
+    if (match.status !== "finished" || match.home.score === null || match.away.score === null) return;
+
+    const home = standings.get(match.home.name);
+    const away = standings.get(match.away.name);
+    if (!home || !away) return;
+
+    home.played += 1;
+    away.played += 1;
+    home.scored += match.home.score;
+    home.conceded += match.away.score;
+    away.scored += match.away.score;
+    away.conceded += match.home.score;
+
+    if (match.home.score === match.away.score) {
+      home.draws += 1;
+      away.draws += 1;
+      home.points += 1;
+      away.points += 1;
+    } else if (match.home.score > match.away.score) {
+      home.wins += 1;
+      away.losses += 1;
+      home.points += 3;
+    } else {
+      away.wins += 1;
+      home.losses += 1;
+      away.points += 3;
+    }
+  });
+
+  return [...standings.values()].sort((left, right) => {
+    const diff = (right.scored - right.conceded) - (left.scored - left.conceded);
+    return (
+      right.points - left.points ||
+      diff ||
+      right.scored - left.scored ||
+      left.teamName.localeCompare(right.teamName, "id-ID")
+    );
+  });
+}
+
+function renderGroupStage(tournament) {
+  const displayContext = buildBracketDisplayContext(tournament);
+  let displayNumber = 1;
+  const getNextDisplayNumber = () => displayNumber++;
+  const groupedMatches = getGroupedMatches(tournament);
+
+  return `
+    <div class="group-stage">
+      ${groupedMatches
+        .map(([groupName, matchEntries]) => {
+          const standings = computeGroupStandings(matchEntries);
+          return `
+            <section class="group-card" aria-label="${escapeHtml(groupName)}">
+              <header class="group-card-head">
+                <h2>${escapeHtml(groupName)}</h2>
+                <span>${matchEntries.length} match</span>
+              </header>
+              <div class="standings-wrap">
+                <table class="standings-table">
+                  <thead>
+                    <tr>
+                      <th>Pos</th>
+                      <th>Tim</th>
+                      <th>P</th>
+                      <th>W</th>
+                      <th>D</th>
+                      <th>L</th>
+                      <th>+/-</th>
+                      <th>Pts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${standings
+                      .map(
+                        (row, index) => `
+                          <tr>
+                            <td>${index + 1}</td>
+                            <td>${escapeHtml(row.teamName)}</td>
+                            <td>${row.played}</td>
+                            <td>${row.wins}</td>
+                            <td>${row.draws}</td>
+                            <td>${row.losses}</td>
+                            <td>${row.scored - row.conceded}</td>
+                            <td>${row.points}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+              <div class="group-match-list">
+                ${matchEntries
+                  .map(({ round, match }, index) =>
+                    renderMatch({ ...match, note: "" }, round, getNextDisplayNumber, index, displayContext)
+                  )
+                  .join("")}
+              </div>
+            </section>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderBracketRounds(tournament) {
   const format = getBracketFormat(tournament);
   const rounds = tournament.rounds || [];
+  const displayContext = buildBracketDisplayContext(tournament);
   let displayNumber = 1;
   const getNextDisplayNumber = () => displayNumber++;
 
   if (format !== "double") {
-    return `<div class="bracket-lane">${rounds.map((round, index) => renderRound(round, getRoundDisplayName(round, index), getNextDisplayNumber)).join("")}</div>`;
+    return `<div class="bracket-lane">${rounds.map((round, index) => renderRound(round, getRoundDisplayName(round, index), getNextDisplayNumber, displayContext)).join("")}</div>`;
   }
 
   const upperRounds = rounds.filter((round) => round.bracketSide === "upper");
@@ -281,13 +441,47 @@ function renderBracketRounds(tournament) {
 
   return `
     <div class="bracket-lane bracket-lane-upper">
-      ${upperRounds.map((round, index) => renderRound(round, `Round ${index + 1}`, getNextDisplayNumber)).join("")}
-      ${grandRounds.map((round) => renderRound(round, "Grand Final", getNextDisplayNumber)).join("")}
+      ${upperRounds.map((round, index) => renderRound(round, `Round ${index + 1}`, getNextDisplayNumber, displayContext)).join("")}
+      ${grandRounds.map((round) => renderRound(round, "Grand Final", getNextDisplayNumber, displayContext)).join("")}
     </div>
     <div class="bracket-lane bracket-lane-lower">
-      ${lowerRounds.map((round, index) => renderRound(round, `Lower ${index + 1}`, getNextDisplayNumber)).join("")}
+      ${lowerRounds.map((round, index) => renderRound(round, `Lower ${index + 1}`, getNextDisplayNumber, displayContext)).join("")}
     </div>
   `;
+}
+
+function buildBracketDisplayContext(tournament) {
+  const rounds = tournament?.rounds || [];
+  const matchTitleById = new Map();
+  const titleByCode = new Map();
+  const lowerMatches = rounds.flatMap((round) =>
+    round.bracketSide === "lower"
+      ? round.matches.map((match) => ({ round, match }))
+      : []
+  );
+  const useSequentialLowerNames = lowerMatches.length > 2;
+  let lowerIndex = 1;
+
+  rounds.forEach((round) => {
+    round.matches.forEach((match, matchIndex) => {
+      let title = "";
+
+      if (round.bracketSide === "grand") {
+        title = "Grand Final";
+      } else if (round.bracketSide === "lower") {
+        title = useSequentialLowerNames
+          ? `Lower Match ${lowerIndex++}`
+          : getMatchDisplayTitle(match, round, matchIndex);
+      } else {
+        title = getMatchDisplayTitle(match, round, matchIndex);
+      }
+
+      matchTitleById.set(match.id, title);
+      titleByCode.set(match.code, title);
+    });
+  });
+
+  return { matchTitleById, titleByCode };
 }
 
 function getRoundDisplayName(round, index) {
@@ -310,7 +504,12 @@ function getRoundMeta(round) {
   return [scheduleText, statusText].filter(Boolean).join(" - ");
 }
 
-function renderRound(round, displayName = round.name, getNextDisplayNumber = () => "") {
+function renderRound(
+  round,
+  displayName = round.name,
+  getNextDisplayNumber = () => "",
+  displayContext = buildBracketDisplayContext()
+) {
   const roundMeta = getRoundMeta(round);
   return `
     <section class="round round-${escapeHtml(round.bracketSide || "main")}" aria-label="${escapeHtml(round.name)}">
@@ -320,14 +519,22 @@ function renderRound(round, displayName = round.name, getNextDisplayNumber = () 
       </div>
       <div class="round-matches">
         ${round.matches
-          .map((match, matchIndex) => renderMatch(match, round, getNextDisplayNumber, matchIndex))
+          .map((match, matchIndex) =>
+            renderMatch(match, round, getNextDisplayNumber, matchIndex, displayContext)
+          )
           .join("")}
       </div>
     </section>
   `;
 }
 
-function renderMatch(match, round, getNextDisplayNumber = () => "", matchIndex = 0) {
+function renderMatch(
+  match,
+  round,
+  getNextDisplayNumber = () => "",
+  matchIndex = 0,
+  displayContext = buildBracketDisplayContext()
+) {
   const details = [
     match.note ? `<span>${escapeHtml(match.note)}</span>` : ""
   ]
@@ -337,11 +544,13 @@ function renderMatch(match, round, getNextDisplayNumber = () => "", matchIndex =
   return `
     <article class="match-card is-${getStatusClass(match.status)}" data-match-id="${escapeHtml(match.id)}">
       <div class="match-top">
-        <span class="match-code">${escapeHtml(getMatchDisplayTitle(match, round, matchIndex))}</span>
+        <span class="match-code">${escapeHtml(
+          displayContext.matchTitleById.get(match.id) || getMatchDisplayTitle(match, round, matchIndex)
+        )}</span>
         <span class="match-status-text">${escapeHtml(statusLabels[match.status] || "Terjadwal")}</span>
       </div>
-      ${renderTeam(match.home, match.winner === "home", getNextDisplayNumber())}
-      ${renderTeam(match.away, match.winner === "away", getNextDisplayNumber())}
+      ${renderTeam(match.home, match.winner === "home", getNextDisplayNumber(), displayContext)}
+      ${renderTeam(match.away, match.winner === "away", getNextDisplayNumber(), displayContext)}
       ${details ? `<div class="match-details">${details}</div>` : ""}
       ${
         state.isAdmin
@@ -372,7 +581,7 @@ function getMatchDisplayTitle(match, round, matchIndex = 0) {
 
   if (round.bracketSide === "grand") return "Grand Final";
   if (round.bracketSide === "lower") {
-    if (/final/i.test(round.name) || (round.matches.length === 1 && !/^Lower R1$/i.test(round.name))) {
+    if (/final/i.test(round.name)) {
       return "Lower Final";
     }
     return `Lower Match ${matchIndex + 1}`;
@@ -384,12 +593,28 @@ function getMatchDisplayTitle(match, round, matchIndex = 0) {
   return `Match ${number}`;
 }
 
-function formatParticipantName(name) {
-  return String(name || "-")
-    .replace(/\bM(\d+)\b/g, "Match $1")
+function formatDisplayTitleForParticipant(title) {
+  return title
+    .replace(/^Grand Final$/i, "Grand Final")
+    .replace(/^Lower Match /i, "Lower Match ")
+    .replace(/^Match /i, "Match ");
+}
+
+function formatParticipantName(name, displayContext = buildBracketDisplayContext()) {
+  let value = String(name || "-");
+
+  displayContext.titleByCode.forEach((title, code) => {
+    value = value.replace(
+      new RegExp(`\\b${code}\\b`, "g"),
+      formatDisplayTitleForParticipant(title)
+    );
+  });
+
+  return value
     .replace(/Pemenang Lower R(\d+)-(\d+)/g, "Pemenang Lower Match $2")
     .replace(/Juara Upper/g, "Pemenang Upper Final")
-    .replace(/Juara Lower/g, "Pemenang Lower Final");
+    .replace(/Juara Lower/g, "Pemenang Lower Final")
+    .replace(/\(Upper Final\)\s+\(Upper Final\)/g, "(Upper Final)");
 }
 
 function drawBracketConnectors() {
@@ -436,8 +661,8 @@ function drawBracketConnectors() {
   });
 }
 
-function renderTeam(team, isWinner, displayNumber = "") {
-  const displayName = formatParticipantName(team.name);
+function renderTeam(team, isWinner, displayNumber = "", displayContext = buildBracketDisplayContext()) {
+  const displayName = formatParticipantName(team.name, displayContext);
   const isPlaceholder =
     displayName.startsWith("Pemenang ") ||
     displayName.startsWith("Kalah ") ||
